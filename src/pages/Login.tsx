@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { LogIn, AlertCircle, Coffee } from 'lucide-react';
+import { LogIn, AlertCircle } from 'lucide-react';
 
 export default function Login() {
     const { login } = useAuth();
@@ -26,10 +26,7 @@ export default function Login() {
             <div className="w-full max-w-md">
                 {/* Logo */}
                 <div className="flex flex-col items-center mb-8">
-                    <div className="w-20 h-20 bg-gradient-to-tr from-blue-600 to-blue-400 rounded-3xl flex items-center justify-center text-white shadow-2xl shadow-blue-500/30 mb-4">
-                        <Coffee size={40} />
-                    </div>
-                    <h1 className="text-3xl font-black text-white tracking-tight">Food Factory</h1>
+                    <img src="/logo.png" alt="Food Factory" className="h-24 w-auto mb-4" />
                     <p className="text-gray-400 mt-1 text-sm">Point of Sale Terminal</p>
                 </div>
 

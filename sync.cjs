@@ -97,7 +97,7 @@ async function performSync() {
                 }
             }
         } catch (netErr) {
-            // Ignore, maybe no network
+            console.error('Network or SQLite error during product sync:', netErr);
         }
 
         // Pull settings from cloud

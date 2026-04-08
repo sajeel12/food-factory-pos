@@ -79,7 +79,7 @@ export default function POS() {
 
                     const rows = await ipcRenderer.invoke('get-products');
                     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    const mapped = rows.map((r: any) => {
+                    const mapped = rows.filter((r: any) => !(r.sku || '').startsWith('RAW-')).map((r: any) => {
                         const nameLower = r.name.toLowerCase();
                         let img = '🍽️';
                         if (nameLower.includes('burger')) img = '🍔';

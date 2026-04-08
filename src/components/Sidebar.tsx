@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { Home, Truck, Settings, LogOut, Coffee, History } from 'lucide-react';
+import { Home, Truck, Settings, LogOut, History } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 const allNavItems = [
@@ -25,8 +25,8 @@ export default function Sidebar() {
         <aside
             className="w-24 bg-gray-900 flex-shrink-0 text-white min-h-screen border-r border-gray-800 shadow-xl z-20 flex flex-col items-center py-6"
         >
-            <div className="w-14 h-14 bg-gradient-to-tr from-blue-600 to-blue-400 rounded-2xl flex items-center justify-center text-white font-bold shadow-lg mb-8">
-                <Coffee size={28} />
+            <div className="w-14 h-14 rounded-2xl flex items-center justify-center overflow-hidden shadow-lg mb-8">
+                <img src="/logo.png" alt="Food Factory" className="w-full h-full object-contain" />
             </div>
 
             <nav className="flex-1 space-y-6 w-full px-4 text-center">
