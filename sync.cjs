@@ -32,7 +32,7 @@ async function performSync() {
             }));
 
             try {
-                const response = await fetch('https://food-factory-cloud-backend.onrender.com/orders/sync', {
+                const response = await fetch(`${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/orders/sync`, {
                     method: 'POST',
                     headers,
                     body: JSON.stringify({ orders: fullOrders })
@@ -52,7 +52,7 @@ async function performSync() {
 
         // Pull items from cloud
         try {
-            const response = await fetch('https://food-factory-cloud-backend.onrender.com/sync/pull?lastSyncDate=1970-01-01', { headers });
+            const response = await fetch(`${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/sync/pull?lastSyncDate=1970-01-01`, { headers });
             if (response.ok) {
                 const data = await response.json();
                 if (data.products && data.products.length > 0) {
@@ -99,7 +99,7 @@ async function performSync() {
 
         // Pull settings from cloud
         try {
-            const response = await fetch('https://food-factory-cloud-backend.onrender.com/settings', { headers });
+            const response = await fetch(`${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/settings`, { headers });
             if (response.ok) {
                 const settings = await response.json();
                 if (settings && settings.length > 0) {
@@ -117,7 +117,7 @@ async function performSync() {
         // Pull Riders from Cloud
         if (branchId && token) {
             try {
-                const response = await fetch(`https://food-factory-cloud-backend.onrender.com/riders?branchId=${branchId}`, { headers });
+                const response = await fetch(`${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/riders?branchId=${branchId}`, { headers });
                 if (response.ok) {
                     const riders = await (response.json().catch(() => []));
                     const clearRiders = db.prepare('DELETE FROM riders');
@@ -134,7 +134,7 @@ async function performSync() {
 
             // Sync Customers
             try {
-                const response = await fetch(`https://food-factory-cloud-backend.onrender.com/customers`, { headers });
+                const response = await fetch(`${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/customers`, { headers });
                 if (response.ok) {
                     const customers = await (response.json().catch(() => []));
                     const clearCustomers = db.prepare('DELETE FROM customers');
@@ -158,7 +158,7 @@ async function performSync() {
 
             // Sync Categories
             try {
-                const catUrl = branchId && branchId !== 'null' ? `https://food-factory-cloud-backend.onrender.com/categories?branchId=${branchId}` : `https://food-factory-cloud-backend.onrender.com/categories`;
+                const catUrl = branchId && branchId !== 'null' ? `${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/categories?branchId=${branchId}` : `${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/categories`;
                 const response = await fetch(catUrl, { headers });
                 if (response.ok) {
                     const categories = await (response.json().catch(() => []));

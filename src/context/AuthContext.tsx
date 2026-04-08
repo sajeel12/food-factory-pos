@@ -59,7 +59,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const login = async (username: string, password: string) => {
         try {
-            const response = await fetch('https://food-factory-cloud-backend.onrender.com/auth/login', {
+            const response = await fetch(`${import.meta.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/auth/login`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username, password }),
