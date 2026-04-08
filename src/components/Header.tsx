@@ -35,7 +35,7 @@ export default function Header({ shiftId }: { shiftId?: string }) {
                 try {
                     // Check cloud connection via health ping
                     try {
-                        const healthRes = await fetch('http://localhost:3000/api/health', { signal: AbortSignal.timeout(2000) });
+                        const healthRes = await fetch('https://food-factory-cloud-backend.onrender.com/api/health', { signal: AbortSignal.timeout(2000) });
                         setSyncStatus(prev => ({ ...prev, isOnline: healthRes.ok }));
                     } catch {
                         setSyncStatus(prev => ({ ...prev, isOnline: false }));
