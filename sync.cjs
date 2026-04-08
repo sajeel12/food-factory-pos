@@ -55,11 +55,15 @@ async function performSync() {
             const response = await fetch(`${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/sync/pull?lastSyncDate=1970-01-01`, { headers });
             if (response.ok) {
                 const data = await response.json();
-                if (data.products && data.products.length > 0) {
+                if (data.products) {
+                    const clearVariants = db.prepare('DELETE FROM item_variants');
+                    const clearProducts = db.prepare('DELETE FROM products');
                     const insertOrReplace = db.prepare('INSERT OR REPLACE INTO products (id, name, sku, price, updatedAt, categoryId, isDeal, dealItems, image) VALUES (@id, @name, @sku, @price, @updatedAt, @categoryId, @isDeal, @dealItems, @image)');
                     const insertVariant = db.prepare('INSERT OR REPLACE INTO item_variants (id, productId, name, price) VALUES (@id, @productId, @name, @price)');
-                    const deleteVariants = db.prepare('DELETE FROM item_variants WHERE productId = ?');
+                    
                     const transaction = db.transaction((products) => {
+                        clearVariants.run();
+                        clearProducts.run();
                         for (const p of products) {
                             const isDeal = p.isDeal ? 1 : 0;
                             let dealItemsStr = null;
@@ -83,7 +87,6 @@ async function performSync() {
                                 image: p.image || null
                             });
                             if (p.variants && p.variants.length > 0) {
-                                deleteVariants.run(p.id);
                                 for (const v of p.variants) {
                                     insertVariant.run({ id: v.id, productId: p.id, name: v.name, price: v.price });
                                 }
