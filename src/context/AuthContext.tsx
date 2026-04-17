@@ -10,6 +10,7 @@ export interface PosUser {
     posRole: string | null;
     branchId: string | null;
     branchName: string | null;
+    branchAddress: string | null;
 }
 
 interface AuthContextType {

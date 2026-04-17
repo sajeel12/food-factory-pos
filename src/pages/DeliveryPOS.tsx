@@ -304,6 +304,9 @@ export default function DeliveryPOS() {
                     customerAddress: deliveryInfo.address,
                     voucherId: appliedVoucher?.id || null,
                     discount: discount,
+                    branchId: user?.branchId || null,
+                    branchAddress: user?.branchAddress || null,
+                    cashierName: user?.username || 'Cashier',
                     createdAt: new Date().toISOString(),
                     items: cart.map(item => ({
                         id: 'ITM-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
@@ -311,6 +314,7 @@ export default function DeliveryPOS() {
                         productId: item.id,
                         variantId: item.variantId || null,
                         variantName: item.variantName || null,
+                        name: item.name,
                         quantity: item.qty,
                         subtotal: item.price * item.qty
                     })),

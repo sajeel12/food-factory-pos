@@ -211,46 +211,105 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                 console.error("Printer connection error:", err);
                 return;
             }
+            let dateObj = new Date(printData.createdAt);
+            let dateStr = dateObj.toLocaleDateString();
+            let timeStr = dateObj.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+
+            const isDelivery = !!printData.customerAddress;
+            const orderTypeStr = isDelivery ? 'DELIVERY' : 'TAKE AWAY';
+            const detailStr = isDelivery ? `Detail: ${printData.customerName || 'Customer'} - ${printData.customerPhone || ''}` : 'Detail: Counter - Cash';
+
+            const rawAddress = printData.branchAddress || '30 FOOT BAZAR, Near masjid Aqsa. St# 24. Shaheen Abad Gujranwala';
+            const addressLine1 = rawAddress.substring(0, 48);
+            const addressLine2 = rawAddress.length > 48 ? rawAddress.substring(48, 96) : '';
+
             printer
-                .font('a')
                 .align('ct')
+                .font('a')
                 .style('b')
-                .size(2, 2)
-                .text('FOOD FACTORY')
                 .size(1, 1)
-                .text('RECEIPT')
+                .text('FOOD FACTORY')
+                .size(0, 0)
+                .style('normal')
+                .text(addressLine1);
+            
+            if (addressLine2) printer.text(addressLine2);
+                
+            printer
+                .text('Contact:0300-9100482')
+                .text(' ')
+                .style('b')
+                .text(orderTypeStr)
+                .style('normal')
+                .text('--------------------------------')
+                .text(detailStr)
                 .text('--------------------------------')
                 .align('lt')
-                .text(`Order ID: ${printData.id}`)
-                .text(`Date: ${new Date(printData.createdAt).toLocaleString()}`)
+                .text(`Bill#: ${printData.id}    Date: ${dateStr}`)
+                .text(`Counter#: 1        Cashier: ${(printData.cashierName || 'FOOD FACTORY').substring(0, 16).toUpperCase()}`)
                 .text('--------------------------------');
+
+            printer.tableCustom([
+                { text:"Deal", align:"LEFT", width:0.40 },
+                { text:"Qty", align:"CENTER", width:0.15 },
+                { text:"Price", align:"RIGHT", width:0.20 },
+                { text:"Total", align:"RIGHT", width:0.25 }
+            ]);
+            printer.text('--------------------------------');
 
             printData.items.forEach(item => {
                 const variantText = item.variantName ? ` (${item.variantName})` : '';
-                printer.text(`${item.quantity}x ${item.name}${variantText} - PKR ${item.subtotal.toFixed(2)}`);
+                const name = `${item.name || 'Item'}${variantText}`.substring(0, 16); 
+                const pricePerItem = item.quantity > 0 ? (item.subtotal / item.quantity) : 0;
+                printer.tableCustom([
+                    { text: name, align:"LEFT", width:0.40 },
+                    { text: String(item.quantity), align:"CENTER", width:0.15 },
+                    { text: String(Math.round(pricePerItem)), align:"RIGHT", width:0.20 },
+                    { text: String(Math.round(item.subtotal)), align:"RIGHT", width:0.25 }
+                ]);
             });
 
-            printer
-                .text('--------------------------------')
-                .align('rt')
-                .style('b')
-                .text(`SUBTOTAL: PKR ${(printData.total - (printData.deliveryFee || 0)).toFixed(2)}`);
-            
+            printer.text('--------------------------------');
+
+            printer.tableCustom([
+                { text: "Bill Amount:", align:"RIGHT", width:0.60, style: 'B' },
+                { text: String(Math.round(printData.total - (printData.deliveryFee || 0))), align:"RIGHT", width:0.40, style: 'B' }
+            ]);
+
             if (printData.deliveryFee > 0) {
-                printer.text(`DELIVERY FEE: PKR ${printData.deliveryFee.toFixed(2)}`);
+                printer.tableCustom([
+                    { text: "Delivery Fee:", align:"RIGHT", width:0.60 },
+                    { text: String(Math.round(printData.deliveryFee)), align:"RIGHT", width:0.40 }
+                ]);
             }
 
             if (printData.discount > 0) {
-                printer.text(`DISCOUNT: -PKR ${printData.discount.toFixed(2)}`);
+                printer.tableCustom([
+                    { text: "Discount:", align:"RIGHT", width:0.60 },
+                    { text: "-" + String(Math.round(printData.discount)), align:"RIGHT", width:0.40 }
+                ]);
+            }
+
+            if (printData.deliveryFee > 0 || printData.discount > 0) {
+                printer.tableCustom([
+                    { text: "NET TOTAL:", align:"RIGHT", width:0.60, style: 'B' },
+                    { text: String(Math.round(printData.total)), align:"RIGHT", width:0.40, style: 'B' }
+                ]);
             }
 
             printer
-                .text(`TOTAL: PKR ${printData.total.toFixed(2)}`)
-                .style('normal')
-                .text(`TENDERED: PKR ${(printData.tenderedAmount || printData.total).toFixed(2)}`)
-                .align('ct')
                 .text(' ')
-                .text('Thank you for dining with us!')
+                .align('ct')
+                .style('normal')
+                .text('FREE HOME DELIVERY (Min Order 500Rs)')
+                .text('Timing: 12:30 PM to 01:00 AM')
+                .style('b')
+                .size(0, 1)
+                .text('A taste you will remember')
+                .size(0, 0)
+                .style('normal')
+                .text(`Printed On: ${dateStr} ${timeStr}`)
+                .text('Developed by Food Factory')
                 .text(' ')
                 .text(' ');
 
