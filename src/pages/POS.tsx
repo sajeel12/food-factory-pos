@@ -248,6 +248,7 @@ export default function POS() {
                     deliveryFee: deliveryFee,
                     voucherId: appliedVoucher?.id || null,
                     discount: discount,
+                    branchId: user?.branchId || null,
                     createdAt: new Date().toISOString(),
                     items: cart.map(item => ({
                         id: 'ITM-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),

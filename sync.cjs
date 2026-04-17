@@ -28,6 +28,7 @@ async function performSync() {
             const getItems = db.prepare('SELECT * FROM order_items WHERE orderId = ?');
             const fullOrders = unsyncedOrders.map(order => ({
                 ...order,
+                branchId, // Force the current POS branchId into every order pushed
                 items: getItems.all(order.id)
             }));
 
@@ -185,13 +186,14 @@ async function performSync() {
                 if (response.ok) {
                     const vouchers = await (response.json().catch(() => []));
                     const clearVouchers = db.prepare('DELETE FROM vouchers');
-                    const insertOrReplaceVoucher = db.prepare('INSERT OR REPLACE INTO vouchers (id, code, type, value, expiryDate, isActive, branchId) VALUES (@id, @code, @type, @value, @expiryDate, @isActive, @branchId)');
+                    const insertOrReplaceVoucher = db.prepare('INSERT OR REPLACE INTO vouchers (id, code, name, type, value, expiryDate, isActive, branchId) VALUES (@id, @code, @name, @type, @value, @expiryDate, @isActive, @branchId)');
                     const transaction = db.transaction((list) => {
                         clearVouchers.run();
                         for (const v of list) {
                             insertOrReplaceVoucher.run({
                                 id: v.id,
                                 code: v.code,
+                                name: v.name || null,
                                 type: v.type,
                                 value: v.value,
                                 expiryDate: v.expiryDate,

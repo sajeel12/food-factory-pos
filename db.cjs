@@ -117,6 +117,7 @@ function initDb() {
     CREATE TABLE IF NOT EXISTS vouchers (
       id TEXT PRIMARY KEY,
       code TEXT UNIQUE NOT NULL,
+      name TEXT,
       type TEXT NOT NULL,
       value REAL NOT NULL,
       expiryDate TEXT NOT NULL,
@@ -199,6 +200,10 @@ function initDb() {
   } catch (e) {}
   try {
     db.exec(`ALTER TABLE products ADD COLUMN image TEXT;`);
+  } catch (e) {}
+
+  try {
+    db.exec(`ALTER TABLE vouchers ADD COLUMN name TEXT;`);
   } catch (e) {}
 
   return db;
