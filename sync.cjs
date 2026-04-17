@@ -178,6 +178,33 @@ async function performSync() {
             } catch (e) {
                 console.error('Failed to sync categories', e);
             }
+
+            // Sync Vouchers
+            try {
+                const response = await fetch(`${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/vouchers?branchId=${branchId}`, { headers });
+                if (response.ok) {
+                    const vouchers = await (response.json().catch(() => []));
+                    const clearVouchers = db.prepare('DELETE FROM vouchers');
+                    const insertOrReplaceVoucher = db.prepare('INSERT OR REPLACE INTO vouchers (id, code, type, value, expiryDate, isActive, branchId) VALUES (@id, @code, @type, @value, @expiryDate, @isActive, @branchId)');
+                    const transaction = db.transaction((list) => {
+                        clearVouchers.run();
+                        for (const v of list) {
+                            insertOrReplaceVoucher.run({
+                                id: v.id,
+                                code: v.code,
+                                type: v.type,
+                                value: v.value,
+                                expiryDate: v.expiryDate,
+                                isActive: v.isActive ? 1 : 0,
+                                branchId: v.branchId || null
+                            });
+                        }
+                    });
+                    transaction(vouchers || []);
+                }
+            } catch (e) {
+                console.error('Failed to sync vouchers', e);
+            }
         }
 
     } catch (error) {

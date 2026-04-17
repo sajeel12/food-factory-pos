@@ -6,7 +6,7 @@ const escpos = require('escpos');
 escpos.USB = require('escpos-usb');
 escpos.Network = require('escpos-network');
 
-function getPrinterDevice(type, addr) {
+function getPrinterDevice(type, addr, port) {
     if (type === 'USB') {
         // If addr is in "vendorId:productId" hex format, target that specific device
         if (addr && addr.includes(':')) {
@@ -15,7 +15,7 @@ function getPrinterDevice(type, addr) {
         }
         return new escpos.USB(); // fallback: first available USB printer
     }
-    if (type === 'LAN' && addr) return new escpos.Network(addr);
+    if (type === 'LAN' && addr) return new escpos.Network(addr, parseInt(port) || 9100);
     return null;
 }
 
@@ -110,8 +110,8 @@ ipcMain.handle('get-categories', async () => {
 
 ipcMain.handle('create-order', async (event, orderData) => {
     const db = getDb();
-    const { id, total, status, items, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress } = orderData;
-    const insertOrder = db.prepare('INSERT INTO orders (id, total, status, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress) VALUES (@id, @total, @status, @paymentMethod, @tenderedAmount, @customerName, @customerPhone, @customerAddress)');
+    const { id, total, status, items, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress, deliveryFee } = orderData;
+    const insertOrder = db.prepare('INSERT INTO orders (id, total, status, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress, deliveryFee) VALUES (@id, @total, @status, @paymentMethod, @tenderedAmount, @customerName, @customerPhone, @customerAddress, @deliveryFee)');
     const insertItem = db.prepare('INSERT INTO order_items (id, orderId, productId, variantId, variantName, quantity, subtotal) VALUES (@id, @orderId, @productId, @variantId, @variantName, @quantity, @subtotal)');
 
     const transaction = db.transaction((order, cartItems) => {
@@ -136,7 +136,10 @@ ipcMain.handle('create-order', async (event, orderData) => {
             id, total, status, paymentMethod: pm, tenderedAmount: ta,
             customerName: customerName || null,
             customerPhone: customerPhone || null,
-            customerAddress: customerAddress || null
+            customerAddress: customerAddress || null,
+            deliveryFee: deliveryFee || 0,
+            voucherId: orderData.voucherId || null,
+            discount: orderData.discount || 0
         }, items);
         return { success: true };
     } catch (e) {
@@ -147,6 +150,9 @@ ipcMain.handle('create-order', async (event, orderData) => {
 ipcMain.handle('get-settings', async (event, keys) => {
     try {
         const db = getDb();
+        if (!keys || keys.length === 0) {
+            return db.prepare(`SELECT * FROM settings`).all();
+        }
         const placeholders = keys.map(() => '?').join(',');
         return db.prepare(`SELECT * FROM settings WHERE key IN (${placeholders})`).all(...keys);
     } catch (e) {
@@ -170,16 +176,32 @@ ipcMain.handle('save-settings', async (event, updates) => {
     }
 });
 
+ipcMain.handle('get-order-items', async (event, orderId) => {
+    try {
+        const db = getDb();
+        const items = db.prepare(`
+            SELECT oi.*, p.name FROM order_items oi
+            LEFT JOIN products p ON oi.productId = p.id
+            WHERE oi.orderId = ?
+        `).all(orderId);
+        return items;
+    } catch (e) {
+        console.error("Failed to get order items:", e);
+        return [];
+    }
+});
+
 ipcMain.handle('print-receipt', async (event, printData) => {
     try {
         const db = getDb();
         const type = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_TYPE'").get()?.value || 'NONE';
         const addr = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_ADDR'").get()?.value;
+        const port = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_PORT'").get()?.value || '9100';
         const drawerEnabled = db.prepare("SELECT value FROM settings WHERE key = 'CASH_DRAWER_ENABLED'").get()?.value === 'true';
 
         if (type === 'NONE') return { success: true, message: 'Printer disabled' };
 
-        const device = getPrinterDevice(type, addr);
+        const device = getPrinterDevice(type, addr, port);
         if (!device) throw new Error("Could not initialize printer device");
 
         const printer = new escpos.Printer(device);
@@ -205,16 +227,27 @@ ipcMain.handle('print-receipt', async (event, printData) => {
 
             printData.items.forEach(item => {
                 const variantText = item.variantName ? ` (${item.variantName})` : '';
-                printer.text(`${item.quantity}x ${item.name}${variantText} - $${item.subtotal.toFixed(2)}`);
+                printer.text(`${item.quantity}x ${item.name}${variantText} - PKR ${item.subtotal.toFixed(2)}`);
             });
 
             printer
                 .text('--------------------------------')
                 .align('rt')
                 .style('b')
-                .text(`TOTAL: $${printData.total.toFixed(2)}`)
+                .text(`SUBTOTAL: PKR ${(printData.total - (printData.deliveryFee || 0)).toFixed(2)}`);
+            
+            if (printData.deliveryFee > 0) {
+                printer.text(`DELIVERY FEE: PKR ${printData.deliveryFee.toFixed(2)}`);
+            }
+
+            if (printData.discount > 0) {
+                printer.text(`DISCOUNT: -PKR ${printData.discount.toFixed(2)}`);
+            }
+
+            printer
+                .text(`TOTAL: PKR ${printData.total.toFixed(2)}`)
                 .style('normal')
-                .text(`TENDERED: $${(printData.tenderedAmount || printData.total).toFixed(2)}`)
+                .text(`TENDERED: PKR ${(printData.tenderedAmount || printData.total).toFixed(2)}`)
                 .align('ct')
                 .text(' ')
                 .text('Thank you for dining with us!')
@@ -236,10 +269,11 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
         const db = getDb();
         const type = db.prepare("SELECT value FROM settings WHERE key = 'KITCHEN_PRINTER_TYPE'").get()?.value || 'NONE';
         const addr = db.prepare("SELECT value FROM settings WHERE key = 'KITCHEN_PRINTER_ADDR'").get()?.value;
+        const port = db.prepare("SELECT value FROM settings WHERE key = 'KITCHEN_PRINTER_PORT'").get()?.value || '9100';
 
         if (type === 'NONE') return { success: true, message: 'Kitchen printer disabled' };
 
-        const device = getPrinterDevice(type, addr);
+        const device = getPrinterDevice(type, addr, port);
         if (!device) throw new Error("Could not initialize kitchen printer device");
 
         const printer = new escpos.Printer(device);
@@ -288,10 +322,11 @@ ipcMain.handle('open-cash-drawer', async () => {
         const db = getDb();
         const type = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_TYPE'").get()?.value || 'NONE';
         const addr = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_ADDR'").get()?.value;
+        const port = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_PORT'").get()?.value || '9100';
 
         if (type === 'NONE') return { success: true, message: 'Printer disabled, cannot open drawer' };
 
-        const device = getPrinterDevice(type, addr);
+        const device = getPrinterDevice(type, addr, port);
         if (!device) throw new Error("Could not initialize printer device");
 
         const printer = new escpos.Printer(device);
@@ -334,6 +369,26 @@ ipcMain.handle('search-customer', async (event, phone) => {
     } catch (e) {
         console.error("Failed to search customer:", e);
         return [];
+    }
+});
+
+ipcMain.handle('validate-voucher', async (event, { code, branchId }) => {
+    try {
+        const db = getDb();
+        const voucher = db.prepare("SELECT * FROM vouchers WHERE code = ? AND isActive = 1").get(code);
+        if (!voucher) return { success: false, message: 'Invalid voucher code' };
+        
+        if (new Date() > new Date(voucher.expiryDate)) {
+            return { success: false, message: 'Voucher has expired' };
+        }
+        
+        if (voucher.branchId && voucher.branchId !== branchId) {
+            return { success: false, message: 'Voucher not valid for this branch' };
+        }
+        
+        return { success: true, voucher };
+    } catch (e) {
+        return { success: false, message: e.message };
     }
 });
 

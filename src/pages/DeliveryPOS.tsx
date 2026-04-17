@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Search, ShoppingBag, Plus, Minus, Trash2, Truck, X, MapPin, CheckCircle2, User, UserPlus } from 'lucide-react';
+import { Search, ShoppingBag, Plus, Minus, Trash2, Truck, X, MapPin, CheckCircle2, User, UserPlus, Ticket } from 'lucide-react';
+import ReceiptPreview from '../components/ReceiptPreview';
 // Removed useAuth import as it is currently unused in this component
 
 declare global {
@@ -29,12 +30,24 @@ interface Product {
     dealItems?: { name: string; quantity: number }[];
 }
 
+interface ReceiptItem {
+    id: string;
+    orderId: string;
+    productId: string;
+    variantId: string | null;
+    variantName: string | null;
+    quantity: number;
+    subtotal: number;
+}
+
 interface DeliveryOrder {
     id: string;
     customerName: string;
-    customerPhone: string;
-    customerAddress: string;
+    customerPhone?: string | null;
+    customerAddress?: string | null;
     status: string;
+    deliveryFee: number;
+    items: ReceiptItem[];
     createdAt: string;
     rider?: string | null;
 }
@@ -57,12 +70,19 @@ export default function DeliveryPOS() {
     const [deliveryMode, setDeliveryMode] = useState(false);
     const [deliveryInfo, setDeliveryInfo] = useState({ name: '', phone: '', address: '' });
     const [customerSuggestions, setCustomerSuggestions] = useState<{ id: string; name: string; phone: string; address: string | null; loyaltyPoints: number }[]>([]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [receiptData, setReceiptData] = useState<any>(null);
 
     // Delivery Queue State
     const [orders, setOrders] = useState<DeliveryOrder[]>([]);
     const [riders, setRiders] = useState<Rider[]>([]);
     const [queueSearch, setQueueSearch] = useState('');
     const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+    const [configDeliveryFee, setConfigDeliveryFee] = useState<number>(0);
+    const [waiveDeliveryFee, setWaiveDeliveryFee] = useState(false);
+    const [couponCode, setCouponCode] = useState('');
+    const [appliedVoucher, setAppliedVoucher] = useState<any>(null);
+    const [discountError, setDiscountError] = useState<string | null>(null);
 
     const fetchQueue = useCallback(async () => {
         if (ipcRenderer) {
@@ -117,11 +137,24 @@ export default function DeliveryPOS() {
         }
     }, []);
 
+    const loadSettings = useCallback(async () => {
+        if (ipcRenderer) {
+            try {
+                const settings = await ipcRenderer.invoke('get-settings');
+                const feeSetting = settings.find((s: any) => s.key === 'DELIVERY_FEE');
+                if (feeSetting) setConfigDeliveryFee(Number(feeSetting.value) || 0);
+            } catch (err) {
+                console.error('Failed to load settings', err);
+            }
+        }
+    }, []);
+
     useEffect(() => {
         let isMounted = true;
         const init = async () => {
             if (isMounted) {
                 await loadProducts();
+                await loadSettings();
                 await fetchQueue();
             }
         };
@@ -133,6 +166,7 @@ export default function DeliveryPOS() {
         const handleSync = () => {
             if (isMounted) {
                 loadProducts();
+                loadSettings();
                 fetchQueue();
             }
         };
@@ -143,7 +177,7 @@ export default function DeliveryPOS() {
             clearInterval(interval);
             window.removeEventListener('sync-completed', handleSync);
         };
-    }, [loadProducts, fetchQueue]);
+    }, [loadProducts, fetchQueue, loadSettings]);
 
     // POS Logic
     const filteredProducts = products.filter((p: Product) =>
@@ -184,12 +218,49 @@ export default function DeliveryPOS() {
                 return newQty > 0 ? { ...item, qty: newQty } : item;
             }
             return item;
-        }));
+        }).filter(item => item.qty > 0));
     };
 
-    const subtotal = cart.reduce((sum, item) => sum + (Number(item.price) * Number(item.qty)), 0);
-    const tax = 0; // Removed implicit 16% GST
-    const total = subtotal + tax;
+    const removeItem = (uniqueId: string) => {
+        setCart(prev => prev.filter(item => item.uniqueId !== uniqueId));
+    };
+
+    const handleApplyCoupon = async () => {
+        if (!couponCode || !ipcRenderer) return;
+        setDiscountError(null);
+        try {
+            // Need to pass branchId if we want branch-specific validation
+            const res = await ipcRenderer.invoke('validate-voucher', { code: couponCode.toUpperCase(), branchId: null });
+            if (res.success) {
+                setAppliedVoucher(res.voucher);
+                setCouponCode('');
+            } else {
+                setDiscountError(res.message);
+            }
+        } catch (e) {
+            setDiscountError('Error validating coupon');
+        }
+    };
+
+    const removeVoucher = () => {
+        setAppliedVoucher(null);
+        setDiscountError(null);
+    };
+
+    const subtotal = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
+    const deliveryFee = !waiveDeliveryFee ? configDeliveryFee : 0;
+    
+    let discount = 0;
+    if (appliedVoucher) {
+        if (appliedVoucher.type === 'PERCENTAGE') {
+            discount = subtotal * (appliedVoucher.value / 100);
+        } else {
+            discount = Math.min(subtotal, appliedVoucher.value);
+        }
+    }
+
+    const tax = subtotal * 0; // matching POS.tsx behavior
+    const total = Math.max(0, subtotal + tax + deliveryFee - discount);
 
     const handlePhoneChange = async (val: string) => {
         setDeliveryInfo({ ...deliveryInfo, phone: val });
@@ -231,6 +302,9 @@ export default function DeliveryPOS() {
                     customerName: deliveryInfo.name,
                     customerPhone: deliveryInfo.phone,
                     customerAddress: deliveryInfo.address,
+                    voucherId: appliedVoucher?.id || null,
+                    discount: discount,
+                    createdAt: new Date().toISOString(),
                     items: cart.map(item => ({
                         id: 'ITM-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
                         orderId: orderId,
@@ -239,20 +313,21 @@ export default function DeliveryPOS() {
                         variantName: item.variantName || null,
                         quantity: item.qty,
                         subtotal: item.price * item.qty
-                    }))
+                    })),
+                    deliveryFee: deliveryFee
                 };
 
                 await ipcRenderer.invoke('create-order', payload);
-                await ipcRenderer.invoke('print-receipt', payload);
+                // Kitchen ticket prints immediately
                 await ipcRenderer.invoke('print-kitchen', payload);
 
-                // Clear POS State
-                setCart([]);
+                // Show receipt preview instead of auto-printing
+                setReceiptData(payload);
                 setDeliveryInfo({ name: '', phone: '', address: '' });
                 setCustomerSuggestions([]);
                 setDeliveryMode(false);
 
-                // INSTANT REFRESH QUEUE (Task F54)
+                // INSTANT REFRESH QUEUE
                 await fetchQueue();
             } catch (err) {
                 console.error('Checkout failed', err);
@@ -260,6 +335,21 @@ export default function DeliveryPOS() {
             }
         }
         setIsProcessing(false);
+    };
+
+    const handlePrintReceipt = async () => {
+        if (ipcRenderer && receiptData) {
+            await ipcRenderer.invoke('print-receipt', receiptData);
+        }
+        setReceiptData(null);
+        setCart([]);
+        setAppliedVoucher(null);
+    };
+
+    const handleSkipPrint = () => {
+        setReceiptData(null);
+        setCart([]);
+        setAppliedVoucher(null);
     };
 
     // Queue Logic
@@ -385,7 +475,10 @@ export default function DeliveryPOS() {
                                             <span className="text-xs text-purple-600 font-bold bg-purple-50 px-1.5 py-0.5 rounded mt-1">{item.variantName}</span>
                                         )}
                                     </div>
-                                    <span className="font-black text-gray-900 text-sm">PKR {item.price * item.qty}</span>
+                                    <div className="flex items-center space-x-2">
+                                        <span className="font-black text-gray-900 text-sm">PKR {item.price * item.qty}</span>
+                                        <button onClick={() => removeItem(item.uniqueId)} className="p-1 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"><X size={14} /></button>
+                                    </div>
                                 </div>
                                 <div className="flex justify-between items-center">
                                     <p className="text-xs text-gray-400 font-bold">PKR {item.price} x {item.qty}</p>
@@ -400,14 +493,73 @@ export default function DeliveryPOS() {
                     )}
                 </div>
 
+                {/* Coupon Area */}
+                <div className="p-3 bg-gray-50 border-t border-gray-100">
+                    {appliedVoucher ? (
+                        <div className="flex items-center justify-between bg-blue-50 p-2.5 rounded-xl border border-blue-100">
+                            <div className="flex items-center space-x-2">
+                                <Ticket size={16} className="text-blue-600" />
+                                <div>
+                                    <p className="text-[10px] font-black text-blue-900 uppercase tracking-widest">{appliedVoucher.code}</p>
+                                    <p className="text-[9px] text-blue-600 font-bold">
+                                        -{appliedVoucher.type === 'PERCENTAGE' ? `${appliedVoucher.value}%` : `PKR ${appliedVoucher.value}`} Applied
+                                    </p>
+                                </div>
+                            </div>
+                            <button 
+                                onClick={removeVoucher}
+                                className="p-1 hover:bg-blue-200 text-blue-600 rounded-full transition-colors"
+                            >
+                                <X size={14} />
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="flex space-x-2">
+                            <div className="relative flex-1">
+                                <Ticket size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                                <input
+                                    type="text"
+                                    placeholder="COUPON"
+                                    value={couponCode}
+                                    onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+                                    onKeyDown={(e) => e.key === 'Enter' && handleApplyCoupon()}
+                                    className="w-full pl-8 pr-2 py-1.5 bg-white border border-gray-200 rounded-lg text-[10px] font-bold uppercase tracking-widest outline-none focus:border-blue-500 transition-colors"
+                                />
+                            </div>
+                            <button 
+                                onClick={handleApplyCoupon}
+                                disabled={!couponCode}
+                                className="px-3 py-1.5 bg-gray-900 text-white rounded-lg text-[10px] font-bold hover:bg-blue-600 transition-colors disabled:opacity-30"
+                            >
+                                APPLY
+                            </button>
+                        </div>
+                    )}
+                    {discountError && <p className="text-[9px] text-red-500 mt-1 ml-1 font-bold italic">{discountError}</p>}
+                </div>
+
                 {/* Checkout/Customer Area - Persistent at Bottom */}
                 <div className="p-4 bg-white border-t border-gray-200 shrink-0">
                     {!deliveryMode ? (
                         <div className="space-y-4">
-                            <div className="flex justify-between items-center px-1">
-                                <span className="text-base font-black text-gray-400 uppercase">Subtotal</span>
-                                <span className="text-base font-black text-gray-900">PKR {total.toFixed(0)}</span>
-                            </div>
+                            {appliedVoucher && (
+                                <div className="flex justify-between items-center px-1">
+                                    <span className="text-sm font-black text-gray-400 uppercase">Subtotal</span>
+                                    <span className="text-sm font-black text-gray-900">PKR {subtotal.toFixed(0)}</span>
+                                </div>
+                            )}
+                            {appliedVoucher && (
+                                <div className="flex justify-between items-center px-1">
+                                    <span className="text-sm font-black text-blue-600 uppercase">Discount</span>
+                                    <span className="text-sm font-black text-blue-600">-PKR {discount.toFixed(0)}</span>
+                                </div>
+                            )}
+                            {!appliedVoucher && (
+                                <div className="flex justify-between items-center px-1">
+                                    <span className="text-base font-black text-gray-400 uppercase">Subtotal</span>
+                                    <span className="text-base font-black text-gray-900">PKR {total.toFixed(0)}</span>
+                                </div>
+                            )}
                             <button
                                 disabled={cart.length === 0}
                                 onClick={() => setDeliveryMode(true)}
@@ -465,14 +617,42 @@ export default function DeliveryPOS() {
                                 className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-bold h-14 resize-none"
                             />
 
-                            <div className="flex justify-between items-center pt-2">
-                                <span className="text-sm font-black text-blue-600">PKR {total.toFixed(0)}</span>
+                            <div className="pt-4 space-y-3">
+                                <div className="flex justify-between items-center px-1">
+                                    <span className="text-xs font-black text-gray-400 uppercase">Subtotal</span>
+                                    <span className="text-xs font-black text-gray-900">PKR {subtotal.toFixed(0)}</span>
+                                </div>
+
+                                {configDeliveryFee > 0 && (
+                                    <div className="flex items-center justify-between bg-gray-50 p-2 rounded-xl border border-gray-100">
+                                        <div className="flex items-center space-x-2">
+                                            <Truck size={14} className="text-amber-600" />
+                                            <span className="text-xs font-bold text-gray-700">Fee (PKR {configDeliveryFee})</span>
+                                        </div>
+                                        <button 
+                                            onClick={() => setWaiveDeliveryFee(!waiveDeliveryFee)}
+                                            className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${waiveDeliveryFee ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}
+                                        >
+                                            {waiveDeliveryFee ? 'Waived' : 'Apply'}
+                                        </button>
+                                    </div>
+                                )}
+
+                                <div className="flex justify-between items-center px-1 pb-1">
+                                    <span className="text-sm font-black text-blue-600 uppercase">Total</span>
+                                    <span className="text-sm font-black text-blue-600 text-lg">PKR {total.toFixed(0)}</span>
+                                </div>
+                                {appliedVoucher && (
+                                    <div className="text-[10px] text-center font-bold text-blue-600 mb-2 uppercase tracking-tight">
+                                        Savings: PKR {discount.toFixed(0)}
+                                    </div>
+                                )}
                                 <button
                                     onClick={handleCheckout}
                                     disabled={isProcessing || !deliveryInfo.name || !deliveryInfo.phone || !deliveryInfo.address}
-                                    className="px-6 py-2.5 bg-blue-600 text-white rounded-lg font-black text-sm uppercase tracking-wider shadow-md hover:bg-blue-700 disabled:opacity-50 transition-all"
+                                    className="w-full py-4 bg-amber-600 text-white rounded-2xl font-bold text-lg hover:bg-amber-700 transition-colors disabled:opacity-50"
                                 >
-                                    {isProcessing ? '...' : 'Place Order'}
+                                    {isProcessing ? '...' : 'Confirm Delivery Order'}
                                 </button>
                             </div>
                         </div>
@@ -686,6 +866,15 @@ export default function DeliveryPOS() {
                 .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); borderRadius: 10px; }
                 .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
             `}</style>
+
+            {/* Receipt Preview Modal */}
+            {receiptData && (
+                <ReceiptPreview
+                    data={receiptData}
+                    onPrint={handlePrintReceipt}
+                    onClose={handleSkipPrint}
+                />
+            )}
         </div>
     );
 }

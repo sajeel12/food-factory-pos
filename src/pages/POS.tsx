@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Search, ShoppingBag, Plus, Minus, Trash2, Printer, CreditCard, X, Loader2, Truck } from 'lucide-react';
+import { Search, ShoppingBag, Plus, Minus, Trash2, Printer, CreditCard, X, Truck, Ticket } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import ReceiptPreview from '../components/ReceiptPreview';
 
 declare global {
     interface Window {
@@ -41,10 +42,16 @@ export default function POS() {
     const [selectedProductForVariant, setSelectedProductForVariant] = useState<Product | null>(null);
     const [selectedDealForDetails, setSelectedDealForDetails] = useState<Product | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
+    const [configDeliveryFee, setConfigDeliveryFee] = useState<number>(0);
+    const [waiveDeliveryFee, setWaiveDeliveryFee] = useState(false);
+    const [couponCode, setCouponCode] = useState('');
+    const [appliedVoucher, setAppliedVoucher] = useState<any>(null);
+    const [discountError, setDiscountError] = useState<string | null>(null);
 
     const [checkoutMode, setCheckoutMode] = useState<'Cash' | 'Card' | 'Delivery' | null>(null);
     const [tendered, setTendered] = useState<string>('');
-    const [cardStatus, setCardStatus] = useState<'waiting' | 'processing' | 'approved' | 'declined'>('waiting');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [receiptData, setReceiptData] = useState<any>(null);
 
     const [deliveryInfo, setDeliveryInfo] = useState({ name: '', phone: '', address: '' });
     const [customerSuggestions, setCustomerSuggestions] = useState<{ id: string; name: string; phone: string; address: string | null; loyaltyPoints: number }[]>([]);
@@ -114,7 +121,23 @@ export default function POS() {
         };
         loadProducts();
 
-        const handleSync = () => loadProducts();
+        const loadSettings = async () => {
+            if (ipcRenderer) {
+                try {
+                    const settings = await ipcRenderer.invoke('get-settings');
+                    const fee = settings.find((s: any) => s.key === 'DELIVERY_FEE');
+                    if (fee) setConfigDeliveryFee(Number(fee.value) || 0);
+                } catch (e) {
+                    console.error('Failed to load settings', e);
+                }
+            }
+        };
+        loadSettings();
+
+        const handleSync = () => {
+            loadProducts();
+            loadSettings();
+        };
         window.addEventListener('sync-completed', handleSync);
         return () => window.removeEventListener('sync-completed', handleSync);
     }, [user?.branchId]);
@@ -157,16 +180,48 @@ export default function POS() {
                 return newQty > 0 ? { ...item, qty: newQty } : item;
             }
             return item;
-        }));
+        }).filter(item => item.qty > 0));
     };
 
-    // const removeItem = (id: string) => {
-    //     setCart(prev => prev.filter(item => item.id !== id));
-    // };
+    const removeItem = (uniqueId: string) => {
+        setCart(prev => prev.filter(item => item.uniqueId !== uniqueId));
+    };
+
+    const handleApplyCoupon = async () => {
+        if (!couponCode || !ipcRenderer) return;
+        setDiscountError(null);
+        try {
+            const res = await ipcRenderer.invoke('validate-voucher', { code: couponCode.toUpperCase(), branchId: user?.branchId });
+            if (res.success) {
+                setAppliedVoucher(res.voucher);
+                setCouponCode('');
+            } else {
+                setDiscountError(res.message);
+            }
+        } catch (e) {
+            setDiscountError('Error validating coupon');
+        }
+    };
+
+    const removeVoucher = () => {
+        setAppliedVoucher(null);
+        setDiscountError(null);
+    };
 
     const subtotal = cart.reduce((sum, item) => sum + (Number(item.price) * Number(item.qty)), 0);
-    const tax = 0; // Removed implicit 16% GST as it causes total mismatch
-    const total = subtotal + tax;
+    const deliveryFee = (checkoutMode === 'Delivery' && !waiveDeliveryFee) ? configDeliveryFee : 0;
+    
+    let discount = 0;
+    if (appliedVoucher) {
+        if (appliedVoucher.type === 'PERCENTAGE') {
+            discount = subtotal * (appliedVoucher.value / 100);
+        } else {
+            discount = Math.min(subtotal, appliedVoucher.value);
+        }
+    }
+
+    const tax = 0; 
+    const total = Math.max(0, subtotal + tax + deliveryFee - discount);
 
     const handleCheckout = async (paymentMethod: 'Cash' | 'Card' | 'Delivery') => {
         if (cart.length === 0 || isProcessing) return;
@@ -184,18 +239,23 @@ export default function POS() {
                 const payload = {
                     id: orderId,
                     total: total,
-                    paymentMethod: paymentMethod === 'Delivery' ? 'CASH' : paymentMethod, // Default delivery to cash
+                    paymentMethod: paymentMethod === 'Delivery' ? 'CASH' : paymentMethod.toUpperCase(),
                     tenderedAmount: paymentMethod === 'Cash' ? Number(tendered) || total : total,
                     status: paymentMethod === 'Delivery' ? 'Pending' : 'Completed',
                     customerName: paymentMethod === 'Delivery' ? deliveryInfo.name : null,
                     customerPhone: paymentMethod === 'Delivery' ? deliveryInfo.phone : null,
                     customerAddress: paymentMethod === 'Delivery' ? deliveryInfo.address : null,
+                    deliveryFee: deliveryFee,
+                    voucherId: appliedVoucher?.id || null,
+                    discount: discount,
+                    createdAt: new Date().toISOString(),
                     items: cart.map(item => ({
                         id: 'ITM-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
                         orderId: orderId,
                         productId: item.id,
                         variantId: item.variantId || null,
                         variantName: item.variantName || null,
+                        name: item.name,
                         quantity: item.qty,
                         subtotal: item.price * item.qty
                     }))
@@ -205,13 +265,13 @@ export default function POS() {
                 if (paymentMethod === 'Cash') {
                     await ipcRenderer.invoke('open-cash-drawer');
                 }
-                await ipcRenderer.invoke('print-receipt', payload);
+                // Kitchen ticket prints immediately — no preview needed
                 await ipcRenderer.invoke('print-kitchen', payload);
 
-                setCart([]);
+                // Show receipt preview instead of auto-printing
+                setReceiptData(payload);
                 setCheckoutMode(null);
                 setTendered('');
-                setCardStatus('waiting');
                 setDeliveryInfo({ name: '', phone: '', address: '' });
             } catch (err) {
                 console.error('Checkout failed', err);
@@ -221,14 +281,19 @@ export default function POS() {
         setIsProcessing(false);
     };
 
-    const processCard = () => {
-        setCardStatus('processing');
-        setTimeout(() => {
-            setCardStatus('approved');
-            setTimeout(() => {
-                handleCheckout('Card');
-            }, 1000);
-        }, 2000);
+    const handlePrintReceipt = async () => {
+        if (ipcRenderer && receiptData) {
+            await ipcRenderer.invoke('print-receipt', receiptData);
+        }
+        setReceiptData(null);
+        setCart([]);
+        setAppliedVoucher(null);
+    };
+
+    const handleSkipPrint = () => {
+        setReceiptData(null);
+        setCart([]);
+        setAppliedVoucher(null);
     };
 
     return (
@@ -317,7 +382,7 @@ export default function POS() {
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50/50">
                     {cart.map(item => (
-                        <div key={item.uniqueId} className="bg-white p-3 rounded-2xl border border-gray-100 shadow-sm flex flex-col">
+                        <div key={item.uniqueId} className="bg-white p-3 rounded-2xl border border-gray-100 shadow-sm flex flex-col transition-all">
                             <div className="flex justify-between items-start mb-3">
                                 <span className="font-bold text-gray-800 text-sm w-3/4 leading-snug">
                                     {item.name}
@@ -327,7 +392,10 @@ export default function POS() {
                                         </div>
                                     )}
                                 </span>
-                                <span className="font-bold text-gray-900 text-sm">PKR {item.price * item.qty}</span>
+                                <div className="flex items-center space-x-2">
+                                    <span className="font-bold text-gray-900 text-sm">PKR {Math.round(item.price * item.qty)}</span>
+                                    <button onClick={() => removeItem(item.uniqueId)} className="p-1 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"><X size={14} /></button>
+                                </div>
                             </div>
                             <div className="flex justify-between items-center text-xs">
                                 <p className="text-gray-400 font-semibold">PKR {item.price} x {item.qty}</p>
@@ -341,7 +409,78 @@ export default function POS() {
                     ))}
                 </div>
 
+                {/* Coupon Area */}
+                <div className="p-4 bg-gray-50 border-t border-gray-100">
+                    {appliedVoucher ? (
+                        <div className="flex items-center justify-between bg-blue-50 p-3 rounded-2xl border border-blue-100">
+                            <div className="flex items-center space-x-2">
+                                <Ticket size={18} className="text-blue-600" />
+                                <div>
+                                    <p className="text-xs font-black text-blue-900 uppercase tracking-widest">{appliedVoucher.code}</p>
+                                    <p className="text-[10px] text-blue-600 font-bold">
+                                        -{appliedVoucher.type === 'PERCENTAGE' ? `${appliedVoucher.value}%` : `PKR ${appliedVoucher.value}`} Applied
+                                    </p>
+                                </div>
+                            </div>
+                            <button 
+                                onClick={removeVoucher}
+                                className="p-1.5 hover:bg-blue-200 text-blue-600 rounded-full transition-colors"
+                            >
+                                <X size={16} />
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="flex space-x-2">
+                            <div className="relative flex-1">
+                                <Ticket size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                                <input
+                                    type="text"
+                                    placeholder="COUPON CODE"
+                                    value={couponCode}
+                                    onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+                                    onKeyDown={(e) => e.key === 'Enter' && handleApplyCoupon()}
+                                    className="w-full pl-9 pr-3 py-2 bg-white border border-gray-200 rounded-xl text-xs font-bold uppercase tracking-widest outline-none focus:border-blue-500 transition-colors"
+                                />
+                            </div>
+                            <button 
+                                onClick={handleApplyCoupon}
+                                disabled={!couponCode}
+                                className="px-4 py-2 bg-gray-900 text-white rounded-xl text-xs font-bold hover:bg-blue-600 transition-colors disabled:opacity-30 disabled:hover:bg-gray-900"
+                            >
+                                APPLY
+                            </button>
+                        </div>
+                    )}
+                    {discountError && <p className="text-[10px] text-red-500 mt-1 ml-1 font-bold italic">{discountError}</p>}
+                </div>
+
                 <div className="bg-white border-t border-gray-200 p-5 rounded-t-3xl shadow-[0_-10px_40px_-15px_rgba(0,0,0,0.1)] relative z-20">
+                    {appliedVoucher && (
+                        <div className="space-y-1 mb-2 border-b border-gray-100 pb-2">
+                            <div className="flex justify-between items-center text-xs font-black text-gray-400 uppercase tracking-wider">
+                                <span>Subtotal</span>
+                                <span>PKR {subtotal.toFixed(0)}</span>
+                            </div>
+                            <div className="flex justify-between items-center text-xs font-black text-blue-600 uppercase tracking-wider">
+                                <span>Discount</span>
+                                <span>-PKR {discount.toFixed(0)}</span>
+                            </div>
+                        </div>
+                    )}
+                    {checkoutMode === 'Delivery' && configDeliveryFee > 0 && (
+                        <div className="space-y-1 mb-4 border-b border-gray-100 pb-2">
+                            {!appliedVoucher && (
+                                <div className="flex justify-between items-center text-xs font-black text-gray-400 uppercase tracking-wider">
+                                    <span>Subtotal</span>
+                                    <span>PKR {subtotal.toFixed(0)}</span>
+                                </div>
+                            )}
+                            <div className="flex justify-between items-center text-xs font-black text-amber-600 uppercase tracking-wider">
+                                <span>Delivery Fee</span>
+                                <span>{waiveDeliveryFee ? 'WAIVED' : `PKR ${configDeliveryFee}`}</span>
+                            </div>
+                        </div>
+                    )}
                     <div className="flex justify-between items-center mb-6">
                         <span className="text-xl font-black text-gray-900">Total</span>
                         <span className="text-3xl font-black text-blue-600">PKR {total.toFixed(0)}</span>
@@ -417,23 +556,21 @@ export default function POS() {
                 </div>
             )}
 
-            {/* Card Modal (Stub) */}
+            {/* Card Checkout Confirmation */}
             {checkoutMode === 'Card' && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
                     <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center">
-                        {cardStatus === 'waiting' ? (
-                            <>
-                                <CreditCard size={48} className="mx-auto text-blue-600 mb-4" />
-                                <h2 className="text-2xl font-bold mb-8">Swipe Card</h2>
-                                <button onClick={processCard} className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold">Simulate Pay</button>
-                            </>
-                        ) : (
-                            <div className="py-12">
-                                <Loader2 size={48} className="mx-auto animate-spin text-blue-600 mb-4" />
-                                <p className="font-bold">Processing...</p>
-                            </div>
-                        )}
-                        <button onClick={() => setCheckoutMode(null)} className="mt-4 text-gray-500">Cancel</button>
+                        <CreditCard size={48} className="mx-auto text-blue-600 mb-4" />
+                        <h2 className="text-2xl font-bold mb-2">Card Payment</h2>
+                        <p className="text-4xl font-black text-gray-900 mb-8">PKR {total.toFixed(0)}</p>
+                        <button
+                            onClick={() => handleCheckout('Card')}
+                            disabled={isProcessing}
+                            className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold text-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+                        >
+                            {isProcessing ? 'Processing...' : 'Confirm Card Payment'}
+                        </button>
+                        <button onClick={() => setCheckoutMode(null)} className="mt-4 text-gray-500 font-semibold">Cancel</button>
                     </div>
                 </div>
             )}
@@ -489,8 +626,24 @@ export default function POS() {
                                     className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:border-blue-500 h-24 resize-none"
                                 />
                             </div>
-                            <div className="pt-4">
-                                <p className="text-center font-bold text-gray-500 mb-4 tracking-wide uppercase text-xs">Total: PKR {total.toFixed(0)}</p>
+                             <div className="pt-4 space-y-3">
+                                <p className="text-center font-bold text-gray-500 tracking-wide uppercase text-xs">Total: PKR {total.toFixed(0)}</p>
+                                
+                                {configDeliveryFee > 0 && (
+                                    <div className="flex items-center justify-between bg-gray-50 p-3 rounded-xl border border-gray-100">
+                                        <div className="flex items-center space-x-2">
+                                            <Truck size={16} className="text-amber-600" />
+                                            <span className="text-sm font-bold text-gray-700">Delivery Fee (PKR {configDeliveryFee})</span>
+                                        </div>
+                                        <button 
+                                            onClick={() => setWaiveDeliveryFee(!waiveDeliveryFee)}
+                                            className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${waiveDeliveryFee ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}
+                                        >
+                                            {waiveDeliveryFee ? 'Waived' : 'Apply'}
+                                        </button>
+                                    </div>
+                                )}
+
                                 <button
                                     onClick={() => handleCheckout('Delivery')}
                                     disabled={!deliveryInfo.name || !deliveryInfo.phone || !deliveryInfo.address || isProcessing}
@@ -561,6 +714,15 @@ export default function POS() {
                         </button>
                     </div>
                 </div>
+            )}
+
+            {/* Receipt Preview Modal */}
+            {receiptData && (
+                <ReceiptPreview
+                    data={receiptData}
+                    onPrint={handlePrintReceipt}
+                    onClose={handleSkipPrint}
+                />
             )}
         </div>
     );

@@ -40,6 +40,7 @@ function initDb() {
       customerName TEXT,
       customerPhone TEXT,
       customerAddress TEXT,
+      deliveryFee REAL DEFAULT 0,
       createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
       synced INTEGER DEFAULT 0
     );
@@ -113,6 +114,16 @@ function initDb() {
       branchId TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS vouchers (
+      id TEXT PRIMARY KEY,
+      code TEXT UNIQUE NOT NULL,
+      type TEXT NOT NULL,
+      value REAL NOT NULL,
+      expiryDate TEXT NOT NULL,
+      isActive INTEGER DEFAULT 1,
+      branchId TEXT
+    );
+
     CREATE INDEX IF NOT EXISTS idx_products_updatedAt ON products(updatedAt);
     CREATE INDEX IF NOT EXISTS idx_orders_synced ON orders(synced);
     CREATE INDEX IF NOT EXISTS idx_order_items_orderId ON order_items(orderId);
@@ -154,6 +165,17 @@ function initDb() {
   } catch (e) {
     // Column might already exist
   }
+  try {
+    db.exec(`ALTER TABLE orders ADD COLUMN deliveryFee REAL DEFAULT 0;`);
+  } catch (e) {}
+
+  try {
+    db.exec(`ALTER TABLE orders ADD COLUMN voucherId TEXT;`);
+  } catch (e) {}
+
+  try {
+    db.exec(`ALTER TABLE orders ADD COLUMN discount REAL DEFAULT 0;`);
+  } catch (e) {}
 
   try {
     db.exec(`ALTER TABLE order_items ADD COLUMN variantId TEXT;`);

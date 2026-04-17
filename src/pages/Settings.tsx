@@ -31,8 +31,10 @@ export default function Settings() {
     const [settings, setSettings] = useState<SettingsState>({
         RECEIPT_PRINTER_TYPE: 'NONE',
         RECEIPT_PRINTER_ADDR: '',
+        RECEIPT_PRINTER_PORT: '9100',
         KITCHEN_PRINTER_TYPE: 'NONE',
         KITCHEN_PRINTER_ADDR: '',
+        KITCHEN_PRINTER_PORT: '9100',
         CASH_DRAWER_ENABLED: 'false',
     });
 
@@ -44,7 +46,7 @@ export default function Settings() {
     useEffect(() => {
         async function loadSettings() {
             if (!ipcRenderer) return;
-            const keys = ['RECEIPT_PRINTER_TYPE', 'RECEIPT_PRINTER_ADDR', 'KITCHEN_PRINTER_TYPE', 'KITCHEN_PRINTER_ADDR', 'CASH_DRAWER_ENABLED'];
+            const keys = ['RECEIPT_PRINTER_TYPE', 'RECEIPT_PRINTER_ADDR', 'RECEIPT_PRINTER_PORT', 'KITCHEN_PRINTER_TYPE', 'KITCHEN_PRINTER_ADDR', 'KITCHEN_PRINTER_PORT', 'CASH_DRAWER_ENABLED'];
             const currentList: Setting[] = await ipcRenderer.invoke('get-settings', keys);
 
             setSettings(prev => {
@@ -212,17 +214,33 @@ export default function Settings() {
                 )}
 
                 {type === 'LAN' && (
-                    <div className="pt-4 border-t border-gray-100">
-                        <label className="block text-sm font-semibold text-gray-700 mb-2">
-                            Printer IP Address
-                        </label>
-                        <input
-                            type="text"
-                            value={currentAddr}
-                            onChange={(e) => handleChange(`${prefix}_PRINTER_ADDR`, e.target.value)}
-                            placeholder="192.168.1.100"
-                            className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                        />
+                    <div className="pt-4 border-t border-gray-100 space-y-3">
+                        <div className="grid grid-cols-3 gap-3">
+                            <div className="col-span-2">
+                                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                                    Printer IP Address
+                                </label>
+                                <input
+                                    type="text"
+                                    value={currentAddr}
+                                    onChange={(e) => handleChange(`${prefix}_PRINTER_ADDR`, e.target.value)}
+                                    placeholder="192.168.1.100"
+                                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                                    Port
+                                </label>
+                                <input
+                                    type="text"
+                                    value={settings[`${prefix}_PRINTER_PORT`] || '9100'}
+                                    onChange={(e) => handleChange(`${prefix}_PRINTER_PORT`, e.target.value)}
+                                    placeholder="9100"
+                                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                                />
+                            </div>
+                        </div>
                     </div>
                 )}
             </div>

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Search, Calendar, RefreshCcw, CheckCircle2, Clock, ShoppingBag } from 'lucide-react';
+import { Search, Calendar, RefreshCcw, CheckCircle2, Clock, ShoppingBag, Printer } from 'lucide-react';
+import ReceiptPreview from '../components/ReceiptPreview';
 
 const ipcRenderer = typeof window !== 'undefined' && window.require ? window.require('electron').ipcRenderer : null;
 
@@ -16,6 +17,8 @@ export default function OrderHistory() {
     const [orders, setOrders] = useState<Order[]>([]);
     const [search, setSearch] = useState('');
     const [loading, setLoading] = useState(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [receiptData, setReceiptData] = useState<any>(null);
 
     const fetchHistory = async () => {
         if (ipcRenderer) {
@@ -51,6 +54,31 @@ export default function OrderHistory() {
             fetchHistory();
             window.dispatchEvent(new Event('sync-completed')); // trigger global sync
         }
+    };
+
+    const handleReprint = async (order: Order) => {
+        if (!ipcRenderer) return;
+        try {
+            const items = await ipcRenderer.invoke('get-order-items', order.id);
+            setReceiptData({
+                id: order.id,
+                total: order.total,
+                paymentMethod: order.paymentMethod,
+                tenderedAmount: order.total,
+                status: order.status,
+                createdAt: order.createdAt,
+                items: items || []
+            });
+        } catch (err) {
+            console.error('Failed to load order items for reprint', err);
+        }
+    };
+
+    const handlePrintReceipt = async () => {
+        if (ipcRenderer && receiptData) {
+            await ipcRenderer.invoke('print-receipt', receiptData);
+        }
+        setReceiptData(null);
     };
 
     return (
@@ -153,6 +181,13 @@ export default function OrderHistory() {
                                                     </button>
                                                 </div>
                                             )}
+                                            <button
+                                                onClick={() => handleReprint(order)}
+                                                className="p-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 rounded transition-colors"
+                                                title="Reprint Receipt"
+                                            >
+                                                <Printer size={14} />
+                                            </button>
                                             {order.synced ? (
                                                 <div className="text-emerald-500" title="Synced to Cloud">
                                                     <CheckCircle2 size={18} />
@@ -184,6 +219,15 @@ export default function OrderHistory() {
                     <span>Local Database Storage</span>
                 </div>
             </div>
+
+            {/* Receipt Preview Modal for Reprint */}
+            {receiptData && (
+                <ReceiptPreview
+                    data={receiptData}
+                    onPrint={handlePrintReceipt}
+                    onClose={() => setReceiptData(null)}
+                />
+            )}
         </div>
     );
 }
