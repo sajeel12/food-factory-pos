@@ -144,7 +144,7 @@ export default function ReceiptPreview({ data, cartNames, onPrint, onClose }: Re
                                 <span>Save PKR {data.discount.toFixed(0)}</span>
                             </div>
                         )}
-                        {data.deliveryFee > 0 && !data.discount && (
+                        {data.deliveryFee > 0 && (
                             <div className="flex justify-between text-[10px] text-gray-400 font-bold uppercase tracking-tight italic">
                                 <span>* Delivery Fee Included (PKR {data.deliveryFee})</span>
                             </div>

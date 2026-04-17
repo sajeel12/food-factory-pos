@@ -470,12 +470,10 @@ export default function POS() {
                     )}
                     {checkoutMode === 'Delivery' && configDeliveryFee > 0 && (
                         <div className="space-y-1 mb-4 border-b border-gray-100 pb-2">
-                            {!appliedVoucher && (
-                                <div className="flex justify-between items-center text-xs font-black text-gray-400 uppercase tracking-wider">
-                                    <span>Subtotal</span>
-                                    <span>PKR {subtotal.toFixed(0)}</span>
-                                </div>
-                            )}
+                            <div className="flex justify-between items-center text-xs font-black text-gray-400 uppercase tracking-wider">
+                                <span>Subtotal</span>
+                                <span>PKR {subtotal.toFixed(0)}</span>
+                            </div>
                             <div className="flex justify-between items-center text-xs font-black text-amber-600 uppercase tracking-wider">
                                 <span>Delivery Fee</span>
                                 <span>{waiveDeliveryFee ? 'WAIVED' : `PKR ${configDeliveryFee}`}</span>
