@@ -36,7 +36,7 @@ export default function POS() {
 
     const [activeCategory, setActiveCategory] = useState('All');
     const [search, setSearch] = useState('');
-    const [cart, setCart] = useState<{ uniqueId: string; id: string; name: string; price: number; qty: number; variantId?: string; variantName?: string }[]>([]);
+    const [cart, setCart] = useState<{ uniqueId: string; id: string; name: string; price: number; qty: number; variantId?: string; variantName?: string; dealChoices?: any[] }[]>([]);
     const [categories, setCategories] = useState<Category[]>([]);
     const [products, setProducts] = useState<Product[]>([]);
     const [selectedProductForVariant, setSelectedProductForVariant] = useState<Product | null>(null);
@@ -313,7 +313,7 @@ export default function POS() {
 
                 const orderResult = await ipcRenderer.invoke('create-order', payload);
                 if (orderResult.dailyOrderNumber) {
-                    payload.dailyOrderNumber = orderResult.dailyOrderNumber;
+                    (payload as any).dailyOrderNumber = orderResult.dailyOrderNumber;
                 }
                 if (paymentMethod === 'Cash') {
                     await ipcRenderer.invoke('open-cash-drawer');
