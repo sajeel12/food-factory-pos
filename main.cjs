@@ -252,6 +252,7 @@ ipcMain.handle('print-receipt', async (event, printData) => {
             if (addressLine2) printer.text(addressLine2);
                 
             printer
+                .text(' ')
                 .style('b')
                 .text(orderTypeStr)
                 .style('normal')
@@ -259,11 +260,17 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                 .text(detailStr)
                 .text('--------------------------------')
                 .align('lt')
-                .text(`Bill#: ${printData.id}    Date: ${dateStr}`)
+                .text(`Date: ${dateStr}  ${timeStr}`)
+                .text(' ')
+                .align('ct')
+                .style('b')
                 .size(1, 1)
-                .text(`Order No: ${printData.dailyOrderNumber || printData.id}`)
+                .text(`Order No: ${printData.dailyOrderNumber || '-'}`)
                 .size(0, 0)
-                .text(`Counter#: 1        Cashier: ${rawCashier.substring(0, 16).toUpperCase()}`)
+                .style('normal')
+                .text(' ')
+                .align('lt')
+                .text(`Cashier: ${rawCashier.substring(0, 16).toUpperCase()}`)
                 .text('--------------------------------');
 
             printer.tableCustom([
@@ -288,7 +295,9 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                     try {
                         const choices = JSON.parse(item.dealChoices);
                         choices.forEach(c => {
-                            printer.text(`   => ${c.productName}: ${c.variantName}`);
+                            const qty = c.quantity ? `${c.quantity}x ` : '';
+                            const variant = c.variantName ? `: ${c.variantName}` : '';
+                            printer.text(`   => ${qty}${c.productName}${variant}`);
                         });
                     } catch (e) {}
                 }
@@ -347,7 +356,9 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                 .text('A taste you will remember')
                 .size(0, 0)
                 .style('normal')
+                .text(' ')
                 .text(`Printed On: ${dateStr} ${timeStr}`)
+                .text(`Bill ID: ${printData.id}`)
                 .text('Developed by Food Factory')
                 .text(' ')
                 .text(' ');
@@ -386,16 +397,18 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
                 .align('ct')
                 .style('b')
                 .size(2, 2)
-                .text('*** KITCHEN SLIP ***')
+                .text('KITCHEN SLIP')
                 .size(0, 0)
+                .text('--------------------------------')
+                .text(' ')
+                .align('ct')
+                .style('b')
+                .size(2, 2)
+                .text(`# ${printData.dailyOrderNumber || '-'}`)
+                .size(0, 0)
+                .text(' ')
                 .text('--------------------------------')
                 .align('lt')
-                .text(`Bill ID: ${printData.id}`)
-                .style('b')
-                .size(1, 1)
-                .text(`Order No: ${printData.dailyOrderNumber || printData.id}`)
-                .size(0, 0)
-                .text('--------------------------------')
                 .size(0, 0);
 
             printData.items.forEach(item => {
@@ -405,7 +418,9 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
                     try {
                         const choices = JSON.parse(item.dealChoices);
                         choices.forEach(c => {
-                            printer.text(`   [ ${c.productName}: ${c.variantName} ]`);
+                            const qty = c.quantity ? `${c.quantity}x ` : '';
+                            const variant = c.variantName ? `: ${c.variantName}` : '';
+                            printer.text(`   [ ${qty}${c.productName}${variant} ]`);
                         });
                     } catch (e) {}
                 }

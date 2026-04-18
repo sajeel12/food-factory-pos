@@ -128,7 +128,7 @@ export default function ReceiptPreview({ data, cartNames, onPrint, onClose }: Re
                                     )}
                                     {item.dealChoices && JSON.parse(item.dealChoices).map((choice: any, cidx: number) => (
                                         <div key={cidx} className="text-[10px] text-blue-500 ml-4 italic">
-                                            ↪ {choice.productName}: {choice.variantName}
+                                            ↪ {choice.quantity ? `${choice.quantity}x ` : ''}{choice.productName}{choice.variantName ? `: ${choice.variantName}` : ''}
                                         </div>
                                     ))}
                                 </div>

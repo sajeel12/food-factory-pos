@@ -311,7 +311,10 @@ export default function POS() {
                     }))
                 };
 
-                await ipcRenderer.invoke('create-order', payload);
+                const orderResult = await ipcRenderer.invoke('create-order', payload);
+                if (orderResult.dailyOrderNumber) {
+                    payload.dailyOrderNumber = orderResult.dailyOrderNumber;
+                }
                 if (paymentMethod === 'Cash') {
                     await ipcRenderer.invoke('open-cash-drawer');
                 }

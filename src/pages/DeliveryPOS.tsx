@@ -369,7 +369,10 @@ export default function DeliveryPOS() {
                     deliveryFee: deliveryFee
                 };
 
-                await ipcRenderer.invoke('create-order', payload);
+                const orderResult = await ipcRenderer.invoke('create-order', payload);
+                if (orderResult.dailyOrderNumber) {
+                    payload.dailyOrderNumber = orderResult.dailyOrderNumber;
+                }
                 // Kitchen ticket prints immediately
                 await ipcRenderer.invoke('print-kitchen', payload);
 
