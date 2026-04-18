@@ -598,8 +598,44 @@ export default function DeliveryPOS() {
                     {discountError && <p className="text-[9px] text-red-500 mt-1 ml-1 font-bold italic">{discountError}</p>}
                 </div>
 
-                {/* Checkout/Customer Area - Persistent at Bottom */}
-                <div className="p-4 bg-white border-t border-gray-200 shrink-0">
+                {/* Totals & Order Type Toggle */}
+                <div className="p-4 bg-white border-t border-gray-200 space-y-3 shrink-0">
+                    {!deliveryMode && (
+                        <>
+                            <div className="grid grid-cols-2 gap-2 bg-gray-100 p-1 rounded-xl mb-2">
+                                <button
+                                    onClick={() => setDeliveryInfo({ ...deliveryInfo, name: '', phone: '', address: '' })} // Reset for Take Away
+                                    className={`py-1.5 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all ${!deliveryInfo.address ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400'}`}
+                                >
+                                    Regular
+                                </button>
+                                <button
+                                    onClick={() => setDeliveryMode(true)}
+                                    className={`py-1.5 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all ${deliveryMode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400'}`}
+                                >
+                                    Delivery
+                                </button>
+                            </div>
+
+                            {/* Totals */}
+                            <div className="space-y-1 pt-1">
+                                <div className="flex justify-between items-center px-1">
+                                    <span className="text-xs font-black text-gray-400 uppercase tracking-tighter">Subtotal</span>
+                                    <span className="text-sm font-black text-gray-900">PKR {subtotal.toFixed(0)}</span>
+                                </div>
+                                {appliedVoucher && (
+                                    <div className="flex justify-between items-center px-1">
+                                        <span className="text-xs font-black text-blue-600 uppercase tracking-tighter">Discount</span>
+                                        <span className="text-sm font-black text-blue-600">-PKR {discount.toFixed(0)}</span>
+                                    </div>
+                                )}
+                                <div className="flex justify-between items-center px-1 border-t border-gray-100 pt-2 mb-2">
+                                    <span className="text-sm font-black text-gray-900 uppercase tracking-tighter">Total</span>
+                                    <span className="text-xl font-black text-blue-600">PKR {total.toFixed(0)}</span>
+                                </div>
+                            </div>
+                        </>
+                    )}
                     {!deliveryMode ? (
                         <div className="space-y-4">
                             {appliedVoucher && (

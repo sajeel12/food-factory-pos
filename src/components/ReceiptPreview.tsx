@@ -26,6 +26,8 @@ interface ReceiptData {
     items: ReceiptItem[];
     createdAt?: string;
     dailyOrderNumber?: number;
+    orderType?: string;
+    tableNo?: string | null;
 }
 
 interface ReceiptPreviewProps {
@@ -50,6 +52,7 @@ export default function ReceiptPreview({ data, cartNames, onPrint, onClose }: Re
                     {/* Header with Logo */}
                     <div className="text-center mb-4">
                         <img src="/logo.png" alt="Food Factory" className="h-16 w-auto mx-auto mb-2" />
+                        <p className="text-[10px] text-gray-500 font-bold italic mb-2">A taste you will remember</p>
                         <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Customer Receipt</p>
                     </div>
 
@@ -74,7 +77,17 @@ export default function ReceiptPreview({ data, cartNames, onPrint, onClose }: Re
                             <span>Payment</span>
                             <span className="font-bold">{data.paymentMethod}</span>
                         </div>
-                        {data.status === 'Pending' && (
+                        <div className="flex justify-between">
+                            <span>Type</span>
+                            <span className="font-bold">{data.orderType === 'DINE_IN' ? 'DINE IN' : 'TAKE AWAY'}</span>
+                        </div>
+                        {data.tableNo && (
+                            <div className="flex justify-between">
+                                <span>Table #</span>
+                                <span className="font-bold text-lg text-blue-600">{data.tableNo}</span>
+                            </div>
+                        )}
+                        {data.status === 'Pending' && !data.orderType && (
                             <div className="flex justify-between">
                                 <span>Status</span>
                                 <span className="font-bold text-amber-600">DELIVERY</span>
@@ -126,11 +139,13 @@ export default function ReceiptPreview({ data, cartNames, onPrint, onClose }: Re
                                     {displayVariant && (
                                         <div className="text-[10px] text-purple-500 ml-4">({displayVariant})</div>
                                     )}
+                                    {/* 
                                     {item.dealChoices && JSON.parse(item.dealChoices).map((choice: any, cidx: number) => (
                                         <div key={cidx} className="text-[10px] text-blue-500 ml-4 italic">
-                                            ↪ {choice.quantity ? `${choice.quantity}x ` : ''}{choice.productName}{choice.variantName ? `: ${choice.variantName}` : ''}
+                                            ↪ {choice.productName}{choice.variantName ? `: ${choice.variantName}` : ''}
                                         </div>
                                     ))}
+                                    */}
                                 </div>
                             );
                         })}
@@ -180,7 +195,6 @@ export default function ReceiptPreview({ data, cartNames, onPrint, onClose }: Re
                     {/* Footer */}
                     <div className="text-center text-[10px] text-gray-400 space-y-1">
                         <p className="font-bold">Thank you for dining with us!</p>
-                        <p>Food Factory — A taste you will remember</p>
                     </div>
                 </div>
 

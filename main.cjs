@@ -110,12 +110,14 @@ ipcMain.handle('get-categories', async () => {
 
 ipcMain.handle('create-order', async (event, orderData) => {
     const db = getDb();
-    const { id, total, status, items, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress, deliveryFee } = orderData;
-    const insertOrder = db.prepare('INSERT INTO orders (id, total, status, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress, deliveryFee, dailyOrderNumber) VALUES (@id, @total, @status, @paymentMethod, @tenderedAmount, @customerName, @customerPhone, @customerAddress, @deliveryFee, @dailyOrderNumber)');
+    const { id, total, status, items, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress, deliveryFee, orderType, tableNo } = orderData;
+    const insertOrder = db.prepare('INSERT OR REPLACE INTO orders (id, total, status, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress, deliveryFee, dailyOrderNumber, orderType, tableNo) VALUES (@id, @total, @status, @paymentMethod, @tenderedAmount, @customerName, @customerPhone, @customerAddress, @deliveryFee, @dailyOrderNumber, @orderType, @tableNo)');
+    const deleteItems = db.prepare('DELETE FROM order_items WHERE orderId = ?');
     const insertItem = db.prepare('INSERT INTO order_items (id, orderId, productId, variantId, variantName, quantity, subtotal, dealChoices) VALUES (@id, @orderId, @productId, @variantId, @variantName, @quantity, @subtotal, @dealChoices)');
 
     const transaction = db.transaction((order, cartItems) => {
         insertOrder.run(order);
+        deleteItems.run(order.id);
         for (const item of cartItems) {
             insertItem.run({
                 id: item.id,
@@ -135,10 +137,23 @@ ipcMain.handle('create-order', async (event, orderData) => {
         const ta = tenderedAmount !== undefined ? tenderedAmount : total;
         
         // Calculate daily order number
-        const today = new Date().toISOString().split('T')[0];
-        const prevOrderQuery = db.prepare("SELECT MAX(dailyOrderNumber) as maxNum FROM orders WHERE createdAt LIKE ?");
-        const prevOrder = prevOrderQuery.get(`${today}%`);
-        const dailyOrderNumber = (prevOrder && prevOrder.maxNum ? prevOrder.maxNum : 0) + 1;
+        let finalDailyOrderNumber = 0;
+        const existingOrder = db.prepare("SELECT dailyOrderNumber FROM orders WHERE id = ?").get(id);
+        
+        if (existingOrder && existingOrder.dailyOrderNumber) {
+            finalDailyOrderNumber = existingOrder.dailyOrderNumber;
+        } else {
+            // Get today's date in local time YYYY-MM-DD
+            const now = new Date();
+            const year = now.getFullYear();
+            const month = String(now.getMonth() + 1).padStart(2, '0');
+            const day = String(now.getDate()).padStart(2, '0');
+            const localToday = `${year}-${month}-${day}`;
+            
+            const prevOrderQuery = db.prepare("SELECT MAX(dailyOrderNumber) as maxNum FROM orders WHERE createdAt LIKE ?");
+            const prevOrder = prevOrderQuery.get(`${localToday}%`);
+            finalDailyOrderNumber = (prevOrder && prevOrder.maxNum ? prevOrder.maxNum : 0) + 1;
+        }
 
         transaction({
             id, total, status, paymentMethod: pm, tenderedAmount: ta,
@@ -148,9 +163,11 @@ ipcMain.handle('create-order', async (event, orderData) => {
             deliveryFee: deliveryFee || 0,
             voucherId: orderData.voucherId || null,
             discount: orderData.discount || 0,
-            dailyOrderNumber
+            orderType: orderType || 'TAKE_AWAY',
+            tableNo: tableNo || null,
+            dailyOrderNumber: finalDailyOrderNumber
         }, items);
-        return { success: true, dailyOrderNumber };
+        return { success: true, dailyOrderNumber: finalDailyOrderNumber };
     } catch (e) {
         console.error("Order Creation Error:", e);
         return { success: false, error: e.message };
@@ -213,6 +230,12 @@ ipcMain.handle('print-receipt', async (event, printData) => {
         const device = getPrinterDevice(type, addr, port);
         if (!device) throw new Error("Could not initialize printer device");
 
+        let sessionUser = null;
+        try {
+            const userStr = db.prepare("SELECT value FROM settings WHERE key = 'POS_SESSION_USER'").get()?.value;
+            if (userStr) sessionUser = JSON.parse(userStr);
+        } catch (e) {}
+
         const printer = new escpos.Printer(device);
 
         device.open((err) => {
@@ -225,8 +248,17 @@ ipcMain.handle('print-receipt', async (event, printData) => {
             let timeStr = dateObj.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
 
             const isDelivery = !!printData.customerAddress;
-            const orderTypeStr = isDelivery ? 'DELIVERY' : 'TAKE AWAY';
-            const detailStr = isDelivery ? `Detail: ${printData.customerName || 'Customer'} - ${printData.customerPhone || ''}` : 'Detail: Counter - Cash';
+            const isDineIn = printData.orderType === 'DINE_IN';
+            const orderTypeStr = isDineIn ? 'DINE IN' : (isDelivery ? 'DELIVERY' : 'TAKE AWAY');
+            
+            let detailStr = '';
+            if (isDineIn) {
+                detailStr = `Table No: ${printData.tableNo || '-'}`;
+            } else if (isDelivery) {
+                detailStr = `Detail: ${printData.customerName || 'Customer'} - ${printData.customerPhone || ''}`;
+            } else {
+                detailStr = `Detail: Take Away - ${printData.customerName || 'Cash'}`;
+            }
 
             let sessionUser = null;
             try {
@@ -242,11 +274,15 @@ ipcMain.handle('print-receipt', async (event, printData) => {
 
             printer
                 .align('ct')
-                .raw(Buffer.from([0x1C, 0x70, 0x01, 0x00]))
-                .text(' ') 
-                .font('a')
+                .raw(Buffer.from([0x1C, 0x70, 0x01, 0x00])) // NV Logo (Index 1)
+                .text(' ') // Single flushing space
+                .style('b')
+                .size(0, 1)
+                .text('A taste you will remember')
                 .size(0, 0)
                 .style('normal')
+                .text(' ')
+                .font('a')
                 .text(addressLine1);
             
             if (addressLine2) printer.text(addressLine2);
@@ -285,22 +321,24 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                 const variantText = item.variantName ? ` (${item.variantName})` : '';
                 const name = `${item.name || 'Item'}${variantText}`.substring(0, 16); 
                 const pricePerItem = item.quantity > 0 ? (item.subtotal / item.quantity) : 0;
+                
                 printer.tableCustom([
                     { text: name, align:"LEFT", width:0.40 },
                     { text: String(item.quantity), align:"CENTER", width:0.15 },
                     { text: String(Math.round(pricePerItem)), align:"RIGHT", width:0.20 },
                     { text: String(Math.round(item.subtotal)), align:"RIGHT", width:0.25 }
                 ]);
+                /* 
                 if (item.dealChoices) {
                     try {
                         const choices = JSON.parse(item.dealChoices);
                         choices.forEach(c => {
-                            const qty = c.quantity ? `${c.quantity}x ` : '';
                             const variant = c.variantName ? `: ${c.variantName}` : '';
-                            printer.text(`   => ${qty}${c.productName}${variant}`);
+                            printer.text(`   => ${c.productName}${variant}`);
                         });
                     } catch (e) {}
                 }
+                */
             });
 
             printer.text('--------------------------------');
@@ -351,11 +389,6 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                 .style('normal')
                 .text('FREE HOME DELIVERY (Min Order 500Rs)')
                 .text('Timing: 12:30 PM to 01:00 AM')
-                .style('b')
-                .size(0, 1)
-                .text('A taste you will remember')
-                .size(0, 0)
-                .style('normal')
                 .text(' ')
                 .text(`Printed On: ${dateStr} ${timeStr}`)
                 .text(`Bill ID: ${printData.id}`)
@@ -363,7 +396,9 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                 .text(' ')
                 .text(' ');
 
-            if (drawerEnabled) printer.cashdraw(2);
+            const isCash = printData.paymentMethod === 'CASH' || printData.paymentMethod === 'Cash';
+            if (drawerEnabled && isCash) printer.cashdraw(2);
+            
             printer.cut().close();
         });
         return { success: true };
@@ -393,8 +428,10 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
                 return;
             }
             printer
-                .font('a')
                 .align('ct')
+                .raw(Buffer.from([0x1C, 0x70, 0x01, 0x00])) // NV Logo
+                .text(' ')
+                .font('a')
                 .style('b')
                 .size(2, 2)
                 .text('KITCHEN SLIP')
@@ -407,28 +444,46 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
                 .text(`# ${printData.dailyOrderNumber || '-'}`)
                 .size(0, 0)
                 .text(' ')
-                .text('--------------------------------')
+                .text(`Type: ${printData.orderType === 'DINE_IN' ? 'DINE IN' : 'TAKE AWAY'}`)
+                if (printData.tableNo) {
+                    printer.style('b').size(1, 1).text(`Table No: ${printData.tableNo}`).size(0, 0).style('b');
+                }
+            printer
+                .text(' ')
+            printer
                 .align('lt')
-                .size(0, 0);
+                .style('b')
+                .size(1, 1)
+                .text('Item         Qty')
+                .text('----------------');
 
             printData.items.forEach(item => {
                 const variantText = item.variantName ? ` (${item.variantName})` : '';
-                printer.text(`${item.quantity}x ${item.name}${variantText}`);
+                const itemLine = `${item.name}${variantText}`.substring(0, 13);
+                const qtyLine = `${item.quantity}`;
+                
+                printer
+                    .style('b')
+                    .size(1, 1)
+                    .text(`${itemLine.padEnd(13, ' ')} ${qtyLine.padStart(2, ' ')}`);
+                    
                 if (item.dealChoices) {
                     try {
                         const choices = JSON.parse(item.dealChoices);
                         choices.forEach(c => {
                             const qty = c.quantity ? `${c.quantity}x ` : '';
                             const variant = c.variantName ? `: ${c.variantName}` : '';
-                            printer.text(`   [ ${qty}${c.productName}${variant} ]`);
+                            printer.text(`  > ${qty}${c.productName}${variant}`);
                         });
                     } catch (e) {}
                 }
+                printer
+                    .size(0, 0)
+                    .text('--------------------------------');
             });
 
             printer
-                .size(1, 1)
-                .text('--------------------------------')
+                .text(' ')
                 .text(' ')
                 .text(' ')
                 .text(' ')
@@ -463,6 +518,16 @@ ipcMain.handle('open-cash-drawer', async () => {
         return { success: true };
     } catch (e) {
         return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('get-pending-orders', async () => {
+    try {
+        const db = getDb();
+        return db.prepare("SELECT * FROM orders WHERE status = 'Pending' ORDER BY createdAt ASC").all();
+    } catch (e) {
+        console.error("Failed to fetch pending orders:", e);
+        return [];
     }
 });
 

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, ShoppingBag, Plus, Minus, Trash2, Printer, CreditCard, X, Truck, Ticket } from 'lucide-react';
+import { Search, ShoppingBag, Plus, Minus, Trash2, Printer, CreditCard, X, Truck, Ticket, Clock, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import ReceiptPreview from '../components/ReceiptPreview';
 
@@ -56,6 +56,12 @@ export default function POS() {
 
     const [deliveryInfo, setDeliveryInfo] = useState({ name: '', phone: '', address: '' });
     const [customerSuggestions, setCustomerSuggestions] = useState<{ id: string; name: string; phone: string; address: string | null; loyaltyPoints: number }[]>([]);
+
+    const [orderType, setOrderType] = useState<'DINE_IN' | 'TAKE_AWAY'>('TAKE_AWAY');
+    const [tableNo, setTableNo] = useState('');
+    const [pendingOrders, setPendingOrders] = useState<any[]>([]);
+    const [activePendingOrderId, setActivePendingOrderId] = useState<string | null>(null);
+    const [queueSearch, setQueueSearch] = useState('');
 
     const handlePhoneChange = async (val: string) => {
         setDeliveryInfo({ ...deliveryInfo, phone: val });
@@ -134,13 +140,26 @@ export default function POS() {
             }
         };
         loadSettings();
+        
+        const fetchPending = async () => {
+            if (ipcRenderer) {
+                const pending = await ipcRenderer.invoke('get-pending-orders');
+                setPendingOrders(pending);
+            }
+        };
+        fetchPending();
+        const pendingInterval = setInterval(fetchPending, 10000);
 
         const handleSync = () => {
             loadProducts();
             loadSettings();
+            fetchPending();
         };
         window.addEventListener('sync-completed', handleSync);
-        return () => window.removeEventListener('sync-completed', handleSync);
+        return () => {
+            window.removeEventListener('sync-completed', handleSync);
+            clearInterval(pendingInterval);
+        };
     }, [user?.branchId]);
 
     const filteredProducts = products.filter(p =>
@@ -281,21 +300,91 @@ export default function POS() {
                     for (let i = 0; i < 6; i++) id += chars.charAt(Math.floor(Math.random() * chars.length));
                     return id;
                 };
-                const orderId = generateShortId();
+                const orderId = activePendingOrderId || generateShortId();
                 const payload = {
                     id: orderId,
                     total: total,
                     paymentMethod: paymentMethod === 'Delivery' ? 'CASH' : paymentMethod.toUpperCase(),
                     tenderedAmount: paymentMethod === 'Cash' ? Number(tendered) || total : total,
                     status: paymentMethod === 'Delivery' ? 'Pending' : 'Completed',
-                    customerName: paymentMethod === 'Delivery' ? deliveryInfo.name : null,
-                    customerPhone: paymentMethod === 'Delivery' ? deliveryInfo.phone : null,
+                    customerName: deliveryInfo.name || null,
+                    customerPhone: deliveryInfo.phone || null,
                     customerAddress: paymentMethod === 'Delivery' ? deliveryInfo.address : null,
                     deliveryFee: deliveryFee,
                     voucherId: appliedVoucher?.id || null,
                     discount: discount,
                     branchId: user?.branchId || null,
                     branchAddress: user?.branchAddress || null,
+                    cashierName: user?.username || 'Cashier',
+                    createdAt: new Date().toISOString(),
+                    items: cart.map(item => ({
+                        id: 'ITM-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
+                        orderId: orderId,
+                        productId: item.id,
+                        variantId: item.variantId || null,
+                        variantName: item.variantName || null,
+                        name: item.name,
+                        quantity: item.qty,
+                        subtotal: item.price * item.qty,
+                        dealChoices: item.dealChoices ? JSON.stringify(item.dealChoices) : null
+                    })),
+                    orderType: orderType,
+                    tableNo: orderType === 'DINE_IN' ? tableNo : null
+                };
+
+                const orderResult = await ipcRenderer.invoke('create-order', payload);
+                if (orderResult.dailyOrderNumber) {
+                    (payload as any).dailyOrderNumber = orderResult.dailyOrderNumber;
+                }
+                // Kitchen ticket prints immediately — no preview needed
+                await ipcRenderer.invoke('print-kitchen', payload);
+
+                // Show receipt preview instead of auto-printing
+                setReceiptData(payload);
+                setCheckoutMode(null);
+                setTendered('');
+                setDeliveryInfo({ name: '', phone: '', address: '' });
+                setTableNo('');
+                setCart([]);
+                setAppliedVoucher(null);
+                setActivePendingOrderId(null);
+                window.dispatchEvent(new Event('sync-completed'));
+            } catch (err) {
+                console.error('Checkout failed', err);
+                alert('Order Failed processing.');
+            }
+        }
+        setIsProcessing(false);
+    };
+
+    const handleHoldOrder = async () => {
+        if (cart.length === 0 || isProcessing) return;
+        if (orderType === 'DINE_IN' && !tableNo) {
+            alert("Please enter a Table Number for Dine-In");
+            return;
+        }
+
+        setIsProcessing(true);
+        if (ipcRenderer) {
+            try {
+                const generateShortId = () => {
+                    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+                    let id = '';
+                    for (let i = 0; i < 6; i++) id += chars.charAt(Math.floor(Math.random() * chars.length));
+                    return id;
+                };
+                const orderId = activePendingOrderId || generateShortId();
+                const payload = {
+                    id: orderId,
+                    total: total,
+                    paymentMethod: 'CASH',
+                    tenderedAmount: total,
+                    status: 'Pending',
+                    customerName: deliveryInfo.name || null,
+                    customerPhone: deliveryInfo.phone || null,
+                    orderType: orderType,
+                    tableNo: orderType === 'DINE_IN' ? tableNo : null,
+                    branchId: user?.branchId || null,
                     cashierName: user?.username || 'Cashier',
                     createdAt: new Date().toISOString(),
                     items: cart.map(item => ({
@@ -315,23 +404,57 @@ export default function POS() {
                 if (orderResult.dailyOrderNumber) {
                     (payload as any).dailyOrderNumber = orderResult.dailyOrderNumber;
                 }
-                if (paymentMethod === 'Cash') {
-                    await ipcRenderer.invoke('open-cash-drawer');
-                }
-                // Kitchen ticket prints immediately — no preview needed
                 await ipcRenderer.invoke('print-kitchen', payload);
 
-                // Show receipt preview instead of auto-printing
-                setReceiptData(payload);
-                setCheckoutMode(null);
-                setTendered('');
+                setCart([]);
+                setTableNo('');
                 setDeliveryInfo({ name: '', phone: '', address: '' });
+                setAppliedVoucher(null);
+                setActivePendingOrderId(null);
+                window.dispatchEvent(new Event('sync-completed'));
             } catch (err) {
-                console.error('Checkout failed', err);
-                alert('Order Failed processing.');
+                console.error('Hold Order failed', err);
+                alert('Failed to hold order.');
             }
         }
         setIsProcessing(false);
+    };
+
+    const resumeOrder = async (order: any) => {
+        if (activePendingOrderId === order.id) {
+            // Unselect if already selected
+            setActivePendingOrderId(null);
+            setCart([]);
+            setTableNo('');
+            setDeliveryInfo({ name: '', phone: '', address: '' });
+            return;
+        }
+
+        if (cart.length > 0) {
+            if (!confirm("Discard current cart and resume this order?")) return;
+        }
+
+        try {
+            const items = await ipcRenderer.invoke('get-order-items', order.id);
+            const mappedCart = items.map((item: any) => ({
+                uniqueId: item.variantId ? `${item.productId}-${item.variantId}` : item.productId,
+                id: item.productId,
+                name: item.name,
+                price: item.subtotal / item.quantity,
+                qty: item.quantity,
+                variantId: item.variantId,
+                variantName: item.variantName,
+                dealChoices: item.dealChoices ? JSON.parse(item.dealChoices) : undefined
+            }));
+
+            setCart(mappedCart);
+            setOrderType(order.orderType || 'TAKE_AWAY');
+            setTableNo(order.tableNo || '');
+            setDeliveryInfo({ name: order.customerName || '', phone: order.customerPhone || '', address: order.customerAddress || '' });
+            setActivePendingOrderId(order.id);
+        } catch (e) {
+            console.error("Failed to resume order", e);
+        }
     };
 
     const handlePrintReceipt = async () => {
@@ -350,8 +473,10 @@ export default function POS() {
     };
 
     return (
-        <div className="flex w-full h-full bg-gray-50">
-            <div className="flex-1 flex flex-col p-6 overflow-hidden">
+        <div className="flex w-full h-full bg-gray-50 overflow-hidden">
+
+            {/* COLUMN 2: MENU GRID */}
+            <div className="flex-1 flex flex-col p-6 overflow-hidden min-w-0">
                 <div className="flex justify-between items-center mb-6">
                     <div className="flex space-x-2 overflow-x-auto pb-2 scrollbar-hide">
                         {['All', ...categories.map(c => c.name), 'Uncategorized'].map(c => (
@@ -512,7 +637,87 @@ export default function POS() {
                     {discountError && <p className="text-[10px] text-red-500 mt-1 ml-1 font-bold italic">{discountError}</p>}
                 </div>
 
+                {/* Totals & Order Type Toggle */}
                 <div className="bg-white border-t border-gray-200 p-5 rounded-t-3xl shadow-[0_-10px_40px_-15px_rgba(0,0,0,0.1)] relative z-20">
+                    {/* Order Type Selection */}
+                    {!checkoutMode && (
+                        <div className="mb-4">
+                            <div className="grid grid-cols-2 gap-2 bg-gray-100 p-1 rounded-2xl mb-3">
+                                <button
+                                    onClick={() => setOrderType('TAKE_AWAY')}
+                                    className={`py-2 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] transition-all ${orderType === 'TAKE_AWAY' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
+                                >
+                                    Take Away
+                                </button>
+                                <button
+                                    onClick={() => setOrderType('DINE_IN')}
+                                    className={`py-2 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] transition-all ${orderType === 'DINE_IN' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
+                                >
+                                    Dine In
+                                </button>
+                            </div>
+
+                            {/* Contextual Inputs */}
+                            {orderType === 'DINE_IN' ? (
+                                <div className="animate-in slide-in-from-bottom-2 duration-200 space-y-2">
+                                    <div className="relative">
+                                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-gray-400 tracking-tighter">TABLE</span>
+                                        <input
+                                            type="text"
+                                            placeholder="00"
+                                            value={tableNo}
+                                            onChange={(e) => setTableNo(e.target.value)}
+                                            className="w-full pl-14 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:border-blue-500 font-black text-xl text-blue-600"
+                                        />
+                                    </div>
+                                    <input
+                                        type="text"
+                                        placeholder="Customer Name (Optional)"
+                                        value={deliveryInfo.name}
+                                        onChange={(e) => setDeliveryInfo({ ...deliveryInfo, name: e.target.value })}
+                                        className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:border-blue-500 text-xs font-bold"
+                                    />
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-1 gap-2 animate-in slide-in-from-bottom-2 duration-200">
+                                    <input
+                                        type="text"
+                                        placeholder="Customer Name (Optional)"
+                                        value={deliveryInfo.name}
+                                        onChange={(e) => setDeliveryInfo({ ...deliveryInfo, name: e.target.value })}
+                                        className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:border-blue-500 text-xs font-bold"
+                                    />
+                                    <div className="relative">
+                                        <input
+                                            type="text"
+                                            placeholder="Phone (Optional)"
+                                            value={deliveryInfo.phone}
+                                            onChange={(e) => handlePhoneChange(e.target.value)}
+                                            className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:border-blue-500 text-xs font-bold"
+                                        />
+                                        {customerSuggestions.length > 0 && (
+                                            <div className="absolute bottom-full mb-1 z-50 w-full bg-white border border-gray-200 shadow-2xl rounded-xl max-h-48 overflow-y-auto">
+                                                {customerSuggestions.map(c => (
+                                                    <div
+                                                        key={c.id}
+                                                        onClick={() => {
+                                                            setDeliveryInfo({ name: c.name, phone: c.phone, address: c.address || '' });
+                                                            setCustomerSuggestions([]);
+                                                        }}
+                                                        className="p-2 hover:bg-blue-50 cursor-pointer border-b border-gray-100 last:border-0"
+                                                    >
+                                                        <div className="font-bold text-gray-900 text-xs">{c.phone}</div>
+                                                        <div className="text-[10px] text-gray-500">{c.name}</div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {appliedVoucher && (
                         <div className="space-y-1 mb-2 border-b border-gray-100 pb-2">
                             <div className="flex justify-between items-center text-xs font-black text-gray-400 uppercase tracking-wider">
@@ -551,27 +756,37 @@ export default function POS() {
                                     className="flex flex-col items-center justify-center py-4 rounded-2xl font-bold bg-green-50 text-green-700 hover:bg-green-100 transition-colors"
                                 >
                                     <Printer size={20} className="mb-1" />
-                                    <span className="text-xs">Cash</span>
+                                    <span className="text-xs font-black tracking-tighter">CASH</span>
                                 </button>
                                 <button
-                                    onClick={() => setCheckoutMode('Card')}
+                                    onClick={handleHoldOrder}
                                     disabled={cart.length === 0 || isProcessing}
-                                    className="flex flex-col items-center justify-center py-4 rounded-2xl font-bold bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors"
+                                    className="flex flex-col items-center justify-center py-4 rounded-2xl font-bold bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors"
                                 >
-                                    <CreditCard size={20} className="mb-1" />
-                                    <span className="text-xs">Card</span>
+                                    <Clock size={20} className="mb-1" />
+                                    <span className="text-xs font-black tracking-tighter">HOLD</span>
                                 </button>
                             </>
                         )}
                         <button
-                            onClick={() => setCheckoutMode('Delivery')}
+                            onClick={() => setCheckoutMode(isDeliveryRole ? 'Delivery' : 'Card')}
                             disabled={cart.length === 0 || isProcessing}
-                            className={`flex flex-col items-center justify-center py-4 rounded-2xl font-bold transition-colors ${isDeliveryRole ? 'col-span-3 bg-amber-500 text-white hover:bg-amber-600 shadow-md' : 'bg-amber-50 text-amber-700 hover:bg-amber-100'}`}
+                            className={`flex flex-col items-center justify-center py-4 rounded-2xl font-bold transition-colors ${isDeliveryRole ? 'col-span-3 bg-gray-900 text-white hover:bg-black shadow-md' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'}`}
                         >
-                            <Truck size={20} className="mb-1" />
-                            <span className="text-xs">{isDeliveryRole ? 'Place Delivery Order' : 'Delivery'}</span>
+                            {isDeliveryRole ? <Truck size={20} className="mb-1" /> : <CreditCard size={20} className="mb-1" />}
+                            <span className="text-xs font-black tracking-tighter">{isDeliveryRole ? 'CHECKOUT' : 'CARD'}</span>
                         </button>
                     </div>
+                    
+                    {!isDeliveryRole && (
+                        <button
+                            onClick={() => setCheckoutMode('Delivery')}
+                            disabled={cart.length === 0 || isProcessing}
+                            className="w-full py-2.5 text-blue-600 text-[10px] font-black uppercase tracking-[0.2em] hover:bg-blue-50 rounded-xl transition-all"
+                        >
+                            Switch to Delivery Mode
+                        </button>
+                    )}
                 </div>
             </div>
 
@@ -781,6 +996,96 @@ export default function POS() {
                     onComplete={(choices) => handleDealChoicesComplete(selectedDealForChoices, choices)}
                 />
             )}
+
+            {/* Receipt Preview Modal */}
+            {/* COLUMN 3: PENDING ORDERS QUEUE */}
+            <div className="w-[400px] h-full bg-white border-l border-gray-200 flex flex-col shadow-xl shrink-0 relative z-10">
+                <div className="p-5 border-b border-gray-100 flex items-center justify-between bg-white sticky top-0 z-10">
+                    <div className="flex items-center space-x-3">
+                        <div className="p-2.5 bg-amber-100 text-amber-600 rounded-xl">
+                            <Clock size={20} />
+                        </div>
+                        <h2 className="text-lg font-bold text-gray-900">Pending Orders</h2>
+                    </div>
+                    <span className="bg-amber-100 text-amber-700 text-xs font-black px-2.5 py-1 rounded-lg">
+                        {pendingOrders.length}
+                    </span>
+                </div>
+
+                <div className="p-4 border-b border-gray-50">
+                    <div className="relative">
+                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                        <input
+                            type="text"
+                            placeholder="Search by ID, Table, or Customer..."
+                            value={queueSearch}
+                            onChange={(e) => setQueueSearch(e.target.value)}
+                            className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs outline-none focus:border-blue-500 transition-all font-bold"
+                        />
+                    </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50/30">
+                    {pendingOrders
+                        .filter(order => {
+                            const term = queueSearch.toLowerCase();
+                            return (order.id || '').toLowerCase().includes(term) || 
+                                   (order.tableNo || '').toLowerCase().includes(term) ||
+                                   (order.customerName || '').toLowerCase().includes(term);
+                        })
+                        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+                        .map(order => (
+                            <div
+                                key={order.id}
+                                onClick={() => resumeOrder(order)}
+                                className={`group p-4 rounded-2xl border-2 transition-all cursor-pointer relative overflow-hidden ${
+                                    activePendingOrderId === order.id 
+                                    ? 'bg-blue-600 border-blue-600 shadow-lg scale-[1.02]' 
+                                    : 'bg-white border-gray-100 hover:border-blue-200 hover:shadow-md'
+                                }`}
+                            >
+                                <div className="flex justify-between items-start mb-2 relative z-10">
+                                    <div>
+                                        <p className={`text-[10px] font-black uppercase tracking-widest ${activePendingOrderId === order.id ? 'text-blue-100' : 'text-gray-400'}`}>
+                                            Order #{order.id}
+                                        </p>
+                                        <h3 className={`font-black text-lg ${activePendingOrderId === order.id ? 'text-white' : 'text-gray-900'}`}>
+                                            PKR {Number(order.total).toFixed(0)}
+                                        </h3>
+                                    </div>
+                                    <div className={`px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-tighter ${
+                                        activePendingOrderId === order.id ? 'bg-white/20 text-white' : 'bg-amber-100 text-amber-700'
+                                    }`}>
+                                        {order.orderType === 'DINE_IN' ? `TABLE ${order.tableNo || '--'}` : 'TAKE AWAY'}
+                                    </div>
+                                </div>
+
+                                {order.customerName && (
+                                    <p className={`text-xs font-bold mb-2 flex items-center ${activePendingOrderId === order.id ? 'text-blue-50' : 'text-gray-500'}`}>
+                                        <span className="opacity-60 mr-1 italic">Customer:</span> {order.customerName}
+                                    </p>
+                                )}
+
+                                <div className={`text-[10px] font-bold py-2 border-t mt-2 ${activePendingOrderId === order.id ? 'border-white/20 text-blue-100' : 'border-gray-50 text-gray-400'}`}>
+                                    {new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {order.cashierName}
+                                </div>
+
+                                {activePendingOrderId === order.id && (
+                                    <div className="absolute top-0 right-0 p-2 text-white/50">
+                                        <CheckCircle2 size={16} />
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    
+                    {pendingOrders.length === 0 && (
+                        <div className="h-full flex flex-col items-center justify-center text-center p-8 opacity-40">
+                            <Clock size={48} className="text-gray-300 mb-4" />
+                            <p className="text-sm font-bold text-gray-400">No pending orders</p>
+                        </div>
+                    )}
+                </div>
+            </div>
 
             {/* Receipt Preview Modal */}
             {receiptData && (

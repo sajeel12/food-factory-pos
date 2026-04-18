@@ -186,6 +186,14 @@ function initDb() {
   } catch (e) {}
 
   try {
+    db.exec(`ALTER TABLE orders ADD COLUMN orderType TEXT DEFAULT 'TAKE_AWAY';`);
+  } catch (e) {}
+
+  try {
+    db.exec(`ALTER TABLE orders ADD COLUMN tableNo TEXT;`);
+  } catch (e) {}
+
+  try {
     db.exec(`ALTER TABLE order_items ADD COLUMN variantId TEXT;`);
   } catch (e) {
     // Column might already exist
