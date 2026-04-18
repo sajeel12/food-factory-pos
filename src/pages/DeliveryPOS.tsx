@@ -27,7 +27,7 @@ interface Product {
     image?: string | null;
     variants?: { id: string; name: string; price: number }[];
     isDeal?: boolean;
-    dealItems?: { name: string; quantity: number }[];
+    dealItems?: { productId: string; name: string; quantity: number, variantId?: string | null }[];
 }
 
 interface ReceiptItem {
@@ -61,10 +61,11 @@ export default function DeliveryPOS() {
     // POS State
     const [activeCategory, setActiveCategory] = useState('All');
     const [posSearch, setPosSearch] = useState('');
-    const [cart, setCart] = useState<{ uniqueId: string; id: string; name: string; price: number; qty: number; variantId?: string; variantName?: string }[]>([]);
+    const [cart, setCart] = useState<{ uniqueId: string; id: string; name: string; price: number; qty: number; variantId?: string; variantName?: string, dealChoices?: any[] }[]>([]);
     const [categories, setCategories] = useState<Category[]>([]);
     const [products, setProducts] = useState<Product[]>([]);
     const [selectedProductForVariant, setSelectedProductForVariant] = useState<Product | null>(null);
+    const [selectedDealForChoices, setSelectedDealForChoices] = useState<Product | null>(null);
     const [selectedDealForDetails, setSelectedDealForDetails] = useState<Product | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
     const [deliveryMode, setDeliveryMode] = useState(false);
@@ -186,11 +187,37 @@ export default function DeliveryPOS() {
     );
 
     const handleProductClick = (product: Product) => {
-        if (product.variants && product.variants.length > 0) {
+        if (product.isDeal) {
+            const itemsRequiringChoice = product.dealItems?.filter(di => {
+                const subP = products.find(p => p.id === di.productId);
+                return subP && subP.variants && subP.variants.length > 0 && !di.variantId;
+            }) || [];
+
+            if (itemsRequiringChoice.length > 0) {
+                setSelectedDealForChoices(product);
+            } else {
+                addToCartAction(product);
+            }
+        } else if (product.variants && product.variants.length > 0) {
             setSelectedProductForVariant(product);
         } else {
             addToCartAction(product);
         }
+    };
+
+    const handleDealChoicesComplete = (product: Product, choices: any[]) => {
+        setCart(prev => {
+            const uniqueId = `${product.id}-${Date.now()}`;
+            return [...prev, {
+                uniqueId,
+                id: product.id,
+                name: product.name,
+                price: product.price,
+                qty: 1,
+                dealChoices: choices
+            }];
+        });
+        setSelectedDealForChoices(null);
     };
 
     const addToCartAction = (product: Product, variant?: { id: string; name: string; price: number }) => {
@@ -316,7 +343,8 @@ export default function DeliveryPOS() {
                         variantName: item.variantName || null,
                         name: item.name,
                         quantity: item.qty,
-                        subtotal: item.price * item.qty
+                        subtotal: item.price * item.qty,
+                        dealChoices: item.dealChoices ? JSON.stringify(item.dealChoices) : null
                     })),
                     deliveryFee: deliveryFee
                 };
@@ -478,6 +506,11 @@ export default function DeliveryPOS() {
                                         {item.variantName && (
                                             <span className="text-xs text-purple-600 font-bold bg-purple-50 px-1.5 py-0.5 rounded mt-1">{item.variantName}</span>
                                         )}
+                                        {item.dealChoices && (item.dealChoices as any[]).map((choice, cidx) => (
+                                            <div key={cidx} className="text-[10px] text-blue-600 font-bold bg-blue-50 px-2 py-0.5 rounded-md mt-1 ml-2 border border-blue-100 flex items-center">
+                                                <span className="opacity-50 mr-1">↪</span> {choice.productName}: {choice.variantName}
+                                            </div>
+                                        ))}
                                     </div>
                                     <div className="flex items-center space-x-2">
                                         <span className="font-black text-gray-900 text-sm">PKR {item.price * item.qty}</span>
@@ -871,6 +904,16 @@ export default function DeliveryPOS() {
                 .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
             `}</style>
 
+            {/* Deal Choice Modal */}
+            {selectedDealForChoices && (
+                <DealChoiceModal 
+                    deal={selectedDealForChoices}
+                    allProducts={products}
+                    onClose={() => setSelectedDealForChoices(null)}
+                    onComplete={(choices) => handleDealChoicesComplete(selectedDealForChoices, choices)}
+                />
+            )}
+
             {/* Receipt Preview Modal */}
             {receiptData && (
                 <ReceiptPreview
@@ -879,6 +922,72 @@ export default function DeliveryPOS() {
                     onClose={handleSkipPrint}
                 />
             )}
+        </div>
+    );
+}
+
+function DealChoiceModal({ deal, allProducts, onClose, onComplete }: { deal: Product; allProducts: Product[]; onClose: () => void; onComplete: (choices: any[]) => void }) {
+    const itemsToSelect = deal.dealItems?.filter(di => {
+        const subP = allProducts.find(p => p.id === di.productId);
+        return subP && subP.variants && subP.variants.length > 0 && !di.variantId;
+    }) || [];
+
+    const [currentStep, setCurrentStep] = useState(0);
+    const [selections, setSelections] = useState<any[]>([]);
+
+    const currentItem = itemsToSelect[currentStep];
+    const currentProduct = currentItem ? allProducts.find(p => p.id === currentItem.productId) : null;
+
+    const handleSelectVariant = (variant: any) => {
+        const newSelections = [...selections, {
+            productId: currentProduct!.id,
+            productName: currentProduct!.name,
+            variantId: variant.id,
+            variantName: variant.name
+        }];
+
+        if (currentStep < itemsToSelect.length - 1) {
+            setSelections(newSelections);
+            setCurrentStep(currentStep + 1);
+        } else {
+            onComplete(newSelections);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-sm p-8 relative overflow-hidden">
+                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-purple-500" />
+                <button onClick={onClose} className="absolute top-6 right-6 p-2 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-full transition-all outline-none"><X size={20}/></button>
+                
+                <div className="text-center mb-8">
+                    <p className="text-[10px] bg-purple-100 text-purple-700 font-black px-2 py-1 rounded-md inline-block uppercase tracking-widest mb-2">Combo Choice Required</p>
+                    <h2 className="text-2xl font-black text-gray-900 leading-tight tracking-tight">{deal.name}</h2>
+                    <div className="flex justify-center space-x-1 mt-4">
+                        {itemsToSelect.map((_, i) => (
+                            <div key={i} className={`h-1.5 rounded-full transition-all duration-500 ${i === currentStep ? 'w-10 bg-blue-600' : (i < currentStep ? 'w-3 bg-green-500' : 'w-3 bg-gray-200')}`} />
+                        ))}
+                    </div>
+                </div>
+
+                {currentProduct && (
+                    <div className="animate-in slide-in-from-right-8 duration-500">
+                        <p className="text-xs font-black text-gray-400 uppercase tracking-widest text-center mb-6">Step {currentStep + 1}: Choose {currentProduct.name}</p>
+                        <div className="space-y-2">
+                            {currentProduct.variants?.map(v => (
+                                <button
+                                    key={v.id}
+                                    onClick={() => handleSelectVariant(v)}
+                                    className="w-full flex justify-between items-center p-5 bg-white border border-gray-100 hover:border-blue-500 hover:bg-blue-50/50 rounded-2xl transition-all group active:scale-[0.98] outline-none"
+                                >
+                                    <span className="font-extrabold text-gray-800 text-lg tracking-tight">{v.name}</span>
+                                    <Plus size={20} className="text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
+            </div>
         </div>
     );
 }

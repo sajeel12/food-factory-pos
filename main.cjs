@@ -112,7 +112,7 @@ ipcMain.handle('create-order', async (event, orderData) => {
     const db = getDb();
     const { id, total, status, items, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress, deliveryFee } = orderData;
     const insertOrder = db.prepare('INSERT INTO orders (id, total, status, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress, deliveryFee) VALUES (@id, @total, @status, @paymentMethod, @tenderedAmount, @customerName, @customerPhone, @customerAddress, @deliveryFee)');
-    const insertItem = db.prepare('INSERT INTO order_items (id, orderId, productId, variantId, variantName, quantity, subtotal) VALUES (@id, @orderId, @productId, @variantId, @variantName, @quantity, @subtotal)');
+    const insertItem = db.prepare('INSERT INTO order_items (id, orderId, productId, variantId, variantName, quantity, subtotal, dealChoices) VALUES (@id, @orderId, @productId, @variantId, @variantName, @quantity, @subtotal, @dealChoices)');
 
     const transaction = db.transaction((order, cartItems) => {
         insertOrder.run(order);
@@ -124,7 +124,8 @@ ipcMain.handle('create-order', async (event, orderData) => {
                 variantId: item.variantId || null,
                 variantName: item.variantName || null,
                 quantity: item.quantity,
-                subtotal: item.subtotal
+                subtotal: item.subtotal,
+                dealChoices: item.dealChoices || null
             });
         }
     });
@@ -267,6 +268,14 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                     { text: String(Math.round(pricePerItem)), align:"RIGHT", width:0.20 },
                     { text: String(Math.round(item.subtotal)), align:"RIGHT", width:0.25 }
                 ]);
+                if (item.dealChoices) {
+                    try {
+                        const choices = JSON.parse(item.dealChoices);
+                        choices.forEach(c => {
+                            printer.text(`   => ${c.productName}: ${c.variantName}`);
+                        });
+                    } catch (e) {}
+                }
             });
 
             printer.text('--------------------------------');
@@ -358,6 +367,14 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
             printData.items.forEach(item => {
                 const variantText = item.variantName ? ` (${item.variantName})` : '';
                 printer.text(`${item.quantity}x ${item.name}${variantText}`);
+                if (item.dealChoices) {
+                    try {
+                        const choices = JSON.parse(item.dealChoices);
+                        choices.forEach(c => {
+                            printer.text(`   [ ${c.productName}: ${c.variantName} ]`);
+                        });
+                    } catch (e) {}
+                }
             });
 
             printer

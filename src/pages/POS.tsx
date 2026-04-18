@@ -27,7 +27,7 @@ interface Product {
     image?: string | null;
     variants?: { id: string; name: string; price: number }[];
     isDeal?: boolean;
-    dealItems?: { name: string; quantity: number }[];
+    dealItems?: { productId: string; name: string; quantity: number, variantId?: string | null }[];
 }
 
 export default function POS() {
@@ -40,6 +40,7 @@ export default function POS() {
     const [categories, setCategories] = useState<Category[]>([]);
     const [products, setProducts] = useState<Product[]>([]);
     const [selectedProductForVariant, setSelectedProductForVariant] = useState<Product | null>(null);
+    const [selectedDealForChoices, setSelectedDealForChoices] = useState<Product | null>(null);
     const [selectedDealForDetails, setSelectedDealForDetails] = useState<Product | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
     const [configDeliveryFee, setConfigDeliveryFee] = useState<number>(0);
@@ -148,11 +149,38 @@ export default function POS() {
     );
 
     const handleProductClick = (product: Product) => {
-        if (product.variants && product.variants.length > 0) {
+        if (product.isDeal) {
+            // Check if any deal items require choices (has variants but no fixed variantId)
+            const itemsRequiringChoice = product.dealItems?.filter(di => {
+                const subP = products.find(p => p.id === di.productId);
+                return subP && subP.variants && subP.variants.length > 0 && !di.variantId;
+            }) || [];
+
+            if (itemsRequiringChoice.length > 0) {
+                setSelectedDealForChoices(product);
+            } else {
+                addToCartAction(product);
+            }
+        } else if (product.variants && product.variants.length > 0) {
             setSelectedProductForVariant(product);
         } else {
             addToCartAction(product);
         }
+    };
+
+    const handleDealChoicesComplete = (product: Product, choices: any[]) => {
+        setCart(prev => {
+            const uniqueId = `${product.id}-${Date.now()}`; // Deals with choices always unique
+            return [...prev, {
+                uniqueId,
+                id: product.id,
+                name: product.name,
+                price: product.price,
+                qty: 1,
+                dealChoices: choices
+            }];
+        });
+        setSelectedDealForChoices(null);
     };
 
     const addToCartAction = (product: Product, variant?: { id: string; name: string; price: number }) => {
@@ -260,7 +288,8 @@ export default function POS() {
                         variantName: item.variantName || null,
                         name: item.name,
                         quantity: item.qty,
-                        subtotal: item.price * item.qty
+                        subtotal: item.price * item.qty,
+                        dealChoices: item.dealChoices ? JSON.stringify(item.dealChoices) : null
                     }))
                 };
 
@@ -394,6 +423,11 @@ export default function POS() {
                                             {item.variantName}
                                         </div>
                                     )}
+                                    {item.dealChoices && (item.dealChoices as any[]).map((choice, cidx) => (
+                                        <div key={cidx} className="text-[10px] text-blue-600 font-bold bg-blue-50 px-2 py-0.5 rounded-md mt-1 ml-4 border border-blue-100 flex items-center">
+                                            <span className="opacity-50 mr-1">↪</span> {choice.productName}: {choice.variantName}
+                                        </div>
+                                    ))}
                                 </span>
                                 <div className="flex items-center space-x-2">
                                     <span className="font-bold text-gray-900 text-sm">PKR {Math.round(item.price * item.qty)}</span>
@@ -716,6 +750,16 @@ export default function POS() {
                     </div>
                 </div>
             )}
+            
+            {/* Deal Choice Modal */}
+            {selectedDealForChoices && (
+                <DealChoiceModal 
+                    deal={selectedDealForChoices}
+                    allProducts={products}
+                    onClose={() => setSelectedDealForChoices(null)}
+                    onComplete={(choices) => handleDealChoicesComplete(selectedDealForChoices, choices)}
+                />
+            )}
 
             {/* Receipt Preview Modal */}
             {receiptData && (
@@ -725,6 +769,71 @@ export default function POS() {
                     onClose={handleSkipPrint}
                 />
             )}
+        </div>
+    );
+}
+
+function DealChoiceModal({ deal, allProducts, onClose, onComplete }: { deal: Product; allProducts: Product[]; onClose: () => void; onComplete: (choices: any[]) => void }) {
+    const itemsToSelect = deal.dealItems?.filter(di => {
+        const subP = allProducts.find(p => p.id === di.productId);
+        return subP && subP.variants && subP.variants.length > 0 && !di.variantId;
+    }) || [];
+
+    const [currentStep, setCurrentStep] = useState(0);
+    const [selections, setSelections] = useState<any[]>([]);
+
+    const currentItem = itemsToSelect[currentStep];
+    const currentProduct = currentItem ? allProducts.find(p => p.id === currentItem.productId) : null;
+
+    const handleSelectVariant = (variant: any) => {
+        const newSelections = [...selections, {
+            productId: currentProduct!.id,
+            productName: currentProduct!.name,
+            variantId: variant.id,
+            variantName: variant.name
+        }];
+
+        if (currentStep < itemsToSelect.length - 1) {
+            setSelections(newSelections);
+            setCurrentStep(currentStep + 1);
+        } else {
+            onComplete(newSelections);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 relative">
+                <button onClick={onClose} className="absolute top-4 right-4 p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"><X size={20}/></button>
+                
+                <div className="text-center mb-6">
+                    <p className="text-[10px] bg-purple-100 text-purple-700 font-black px-2 py-1 rounded-md inline-block uppercase tracking-widest mb-2">Combo Choice Required</p>
+                    <h2 className="text-2xl font-black text-gray-900 leading-tight">{deal.name}</h2>
+                    <div className="flex justify-center space-x-1 mt-3">
+                        {itemsToSelect.map((_, i) => (
+                            <div key={i} className={`h-1.5 rounded-full transition-all duration-300 ${i === currentStep ? 'w-8 bg-blue-600' : (i < currentStep ? 'w-3 bg-green-500' : 'w-3 bg-gray-200')}`} />
+                        ))}
+                    </div>
+                </div>
+
+                {currentProduct && (
+                    <div className="animate-in slide-in-from-right-4 duration-300">
+                        <p className="text-sm font-bold text-gray-500 mb-4 uppercase text-center">Step {currentStep + 1}: Choose {currentProduct.name}</p>
+                        <div className="space-y-2">
+                            {currentProduct.variants?.map(v => (
+                                <button
+                                    key={v.id}
+                                    onClick={() => handleSelectVariant(v)}
+                                    className="w-full flex justify-between items-center p-4 bg-white border border-gray-200 hover:border-blue-500 hover:bg-blue-50 rounded-2xl transition-all group active:scale-[0.98] outline-none"
+                                >
+                                    <span className="font-bold text-gray-800 text-lg">{v.name}</span>
+                                    <Plus size={18} className="text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
+            </div>
         </div>
     );
 }

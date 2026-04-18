@@ -73,6 +73,7 @@ async function performSync() {
                                     productId: d.productId,
                                     name: d.product?.name,
                                     quantity: d.quantity,
+                                    variantId: d.variantId || null,
                                     variantName: d.variant?.name
                                 })));
                             }

@@ -9,6 +9,7 @@ interface ReceiptItem {
     name?: string;
     quantity: number;
     subtotal: number;
+    dealChoices?: string | null;
 }
 
 interface ReceiptData {
@@ -119,6 +120,11 @@ export default function ReceiptPreview({ data, cartNames, onPrint, onClose }: Re
                                     {displayVariant && (
                                         <div className="text-[10px] text-purple-500 ml-4">({displayVariant})</div>
                                     )}
+                                    {item.dealChoices && JSON.parse(item.dealChoices).map((choice: any, cidx: number) => (
+                                        <div key={cidx} className="text-[10px] text-blue-500 ml-4 italic">
+                                            ↪ {choice.productName}: {choice.variantName}
+                                        </div>
+                                    ))}
                                 </div>
                             );
                         })}

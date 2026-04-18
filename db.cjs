@@ -53,6 +53,7 @@ function initDb() {
       variantName TEXT,
       quantity INTEGER NOT NULL,
       subtotal REAL NOT NULL,
+      dealChoices TEXT,
       FOREIGN KEY(orderId) REFERENCES orders(id)
     );
 
@@ -204,6 +205,10 @@ function initDb() {
 
   try {
     db.exec(`ALTER TABLE vouchers ADD COLUMN name TEXT;`);
+  } catch (e) {}
+
+  try {
+    db.exec(`ALTER TABLE order_items ADD COLUMN dealChoices TEXT;`);
   } catch (e) {}
 
   return db;
