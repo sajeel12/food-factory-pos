@@ -25,6 +25,7 @@ interface ReceiptData {
     discount?: number;
     items: ReceiptItem[];
     createdAt?: string;
+    dailyOrderNumber?: number;
 }
 
 interface ReceiptPreviewProps {
@@ -56,9 +57,14 @@ export default function ReceiptPreview({ data, cartNames, onPrint, onClose }: Re
 
                     {/* Order Info */}
                     <div className="text-xs space-y-1 text-gray-600">
-                        <div className="flex justify-between">
+                        <div className="flex justify-between items-center bg-gray-200 p-2 rounded-lg mb-2">
                             <span>Order #</span>
-                            <span className="font-bold text-gray-900">{data.id}</span>
+                            <div className="text-right">
+                                <div className="text-[10px] text-gray-500">{data.id}</div>
+                                {data.dailyOrderNumber && (
+                                    <div className="font-black text-gray-900 text-xl tracking-tight">Q-{data.dailyOrderNumber}</div>
+                                )}
+                            </div>
                         </div>
                         <div className="flex justify-between">
                             <span>Date</span>

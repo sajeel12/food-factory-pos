@@ -10,6 +10,12 @@ function initDb() {
 
   console.log(`Initialized local SQLite DB at: ${dbPath}`);
 
+  try {
+    db.exec(`ALTER TABLE orders ADD COLUMN dailyOrderNumber INTEGER DEFAULT 0;`);
+  } catch (e) {
+    // Column likely already exists, ignore
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS products (
       id TEXT PRIMARY KEY,

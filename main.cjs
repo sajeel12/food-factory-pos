@@ -111,7 +111,7 @@ ipcMain.handle('get-categories', async () => {
 ipcMain.handle('create-order', async (event, orderData) => {
     const db = getDb();
     const { id, total, status, items, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress, deliveryFee } = orderData;
-    const insertOrder = db.prepare('INSERT INTO orders (id, total, status, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress, deliveryFee) VALUES (@id, @total, @status, @paymentMethod, @tenderedAmount, @customerName, @customerPhone, @customerAddress, @deliveryFee)');
+    const insertOrder = db.prepare('INSERT INTO orders (id, total, status, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress, deliveryFee, dailyOrderNumber) VALUES (@id, @total, @status, @paymentMethod, @tenderedAmount, @customerName, @customerPhone, @customerAddress, @deliveryFee, @dailyOrderNumber)');
     const insertItem = db.prepare('INSERT INTO order_items (id, orderId, productId, variantId, variantName, quantity, subtotal, dealChoices) VALUES (@id, @orderId, @productId, @variantId, @variantName, @quantity, @subtotal, @dealChoices)');
 
     const transaction = db.transaction((order, cartItems) => {
@@ -133,6 +133,13 @@ ipcMain.handle('create-order', async (event, orderData) => {
     try {
         const pm = paymentMethod || 'CASH';
         const ta = tenderedAmount !== undefined ? tenderedAmount : total;
+        
+        // Calculate daily order number
+        const today = new Date().toISOString().split('T')[0];
+        const prevOrderQuery = db.prepare("SELECT MAX(dailyOrderNumber) as maxNum FROM orders WHERE createdAt LIKE ?");
+        const prevOrder = prevOrderQuery.get(`${today}%`);
+        const dailyOrderNumber = (prevOrder && prevOrder.maxNum ? prevOrder.maxNum : 0) + 1;
+
         transaction({
             id, total, status, paymentMethod: pm, tenderedAmount: ta,
             customerName: customerName || null,
@@ -140,9 +147,10 @@ ipcMain.handle('create-order', async (event, orderData) => {
             customerAddress: customerAddress || null,
             deliveryFee: deliveryFee || 0,
             voucherId: orderData.voucherId || null,
-            discount: orderData.discount || 0
+            discount: orderData.discount || 0,
+            dailyOrderNumber
         }, items);
-        return { success: true };
+        return { success: true, dailyOrderNumber };
     } catch (e) {
         console.error("Order Creation Error:", e);
         return { success: false, error: e.message };
@@ -220,16 +228,23 @@ ipcMain.handle('print-receipt', async (event, printData) => {
             const orderTypeStr = isDelivery ? 'DELIVERY' : 'TAKE AWAY';
             const detailStr = isDelivery ? `Detail: ${printData.customerName || 'Customer'} - ${printData.customerPhone || ''}` : 'Detail: Counter - Cash';
 
-            const rawAddress = printData.branchAddress || '30 FOOT BAZAR, Near masjid Aqsa. St# 24. Shaheen Abad Gujranwala';
+            let sessionUser = null;
+            try {
+                const userStr = db.prepare("SELECT value FROM settings WHERE key = 'POS_SESSION_USER'").get()?.value;
+                if (userStr) sessionUser = JSON.parse(userStr);
+            } catch (e) {}
+
+            const rawAddress = printData.branchAddress || sessionUser?.branchAddress || '30 FOOT BAZAR, Near masjid Aqsa. St# 24. Shaheen Abad Gujranwala';
+            const rawCashier = printData.cashierName || sessionUser?.username || 'FOOD FACTORY';
+
             const addressLine1 = rawAddress.substring(0, 48);
             const addressLine2 = rawAddress.length > 48 ? rawAddress.substring(48, 96) : '';
 
             printer
                 .align('ct')
+                .raw(Buffer.from([0x1C, 0x70, 0x01, 0x00]))
+                .text(' ') 
                 .font('a')
-                .style('b')
-                .size(1, 1)
-                .text('FOOD FACTORY')
                 .size(0, 0)
                 .style('normal')
                 .text(addressLine1);
@@ -237,8 +252,6 @@ ipcMain.handle('print-receipt', async (event, printData) => {
             if (addressLine2) printer.text(addressLine2);
                 
             printer
-                .text('Contact:0300-9100482')
-                .text(' ')
                 .style('b')
                 .text(orderTypeStr)
                 .style('normal')
@@ -247,7 +260,10 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                 .text('--------------------------------')
                 .align('lt')
                 .text(`Bill#: ${printData.id}    Date: ${dateStr}`)
-                .text(`Counter#: 1        Cashier: ${(printData.cashierName || 'FOOD FACTORY').substring(0, 16).toUpperCase()}`)
+                .size(1, 1)
+                .text(`Order No: ${printData.dailyOrderNumber || printData.id}`)
+                .size(0, 0)
+                .text(`Counter#: 1        Cashier: ${rawCashier.substring(0, 16).toUpperCase()}`)
                 .text('--------------------------------');
 
             printer.tableCustom([
@@ -306,6 +322,20 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                 ]);
             }
 
+            if (printData.paymentMethod === 'CASH' || printData.paymentMethod === 'Cash') {
+                const tendered = printData.tenderedAmount !== undefined ? printData.tenderedAmount : printData.total;
+                const change = Math.max(0, tendered - printData.total);
+                printer.text('--------------------------------');
+                printer.tableCustom([
+                    { text: "Tendered:", align:"RIGHT", width:0.60 },
+                    { text: String(Math.round(tendered)), align:"RIGHT", width:0.40 }
+                ]);
+                printer.tableCustom([
+                    { text: "Change:", align:"RIGHT", width:0.60 },
+                    { text: String(Math.round(change)), align:"RIGHT", width:0.40 }
+                ]);
+            }
+
             printer
                 .text(' ')
                 .align('ct')
@@ -357,12 +387,16 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
                 .style('b')
                 .size(2, 2)
                 .text('*** KITCHEN SLIP ***')
-                .size(1, 1)
+                .size(0, 0)
                 .text('--------------------------------')
                 .align('lt')
-                .text(`Order ID: ${printData.id}`)
+                .text(`Bill ID: ${printData.id}`)
+                .style('b')
+                .size(1, 1)
+                .text(`Order No: ${printData.dailyOrderNumber || printData.id}`)
+                .size(0, 0)
                 .text('--------------------------------')
-                .size(2, 1);
+                .size(0, 0);
 
             printData.items.forEach(item => {
                 const variantText = item.variantName ? ` (${item.variantName})` : '';

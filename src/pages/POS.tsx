@@ -169,6 +169,14 @@ export default function POS() {
     };
 
     const handleDealChoicesComplete = (product: Product, choices: any[]) => {
+        const allDealChoices = product.dealItems?.map(di => {
+             const choice = choices.find(c => c.productId === di.productId);
+             if (choice) return { productName: choice.productName, variantName: choice.variantName, quantity: di.quantity };
+             const subP = products.find(p => p.id === di.productId);
+             const subVariant = subP?.variants?.find(v => v.id === di.variantId);
+             return { productName: subP?.name || di.name, variantName: subVariant?.name || '', quantity: di.quantity };
+        }) || [];
+
         setCart(prev => {
             const uniqueId = `${product.id}-${Date.now()}`; // Deals with choices always unique
             return [...prev, {
@@ -177,13 +185,22 @@ export default function POS() {
                 name: product.name,
                 price: product.price,
                 qty: 1,
-                dealChoices: choices
+                dealChoices: allDealChoices
             }];
         });
         setSelectedDealForChoices(null);
     };
 
     const addToCartAction = (product: Product, variant?: { id: string; name: string; price: number }) => {
+        let finalDealChoices = undefined;
+        if (product.isDeal && product.dealItems) {
+             finalDealChoices = product.dealItems.map(di => {
+                 const subP = products.find(p => p.id === di.productId);
+                 const subVariant = subP?.variants?.find(v => v.id === di.variantId);
+                 return { productName: subP?.name || di.name, variantName: subVariant?.name || '', quantity: di.quantity };
+             });
+        }
+        
         setCart(prev => {
             const uniqueId = variant ? `${product.id}-${variant.id}` : product.id;
             const exists = prev.find(item => item.uniqueId === uniqueId);
@@ -195,7 +212,8 @@ export default function POS() {
                 price: variant ? variant.price : product.price, 
                 qty: 1,
                 variantId: variant?.id,
-                variantName: variant?.name
+                variantName: variant?.name,
+                dealChoices: finalDealChoices
             }];
         });
         setSelectedProductForVariant(null);
