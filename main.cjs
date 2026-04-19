@@ -318,8 +318,7 @@ ipcMain.handle('print-receipt', async (event, printData) => {
             printer.text('--------------------------------');
 
             printData.items.forEach(item => {
-                const variantText = item.variantName ? ` (${item.variantName})` : '';
-                const name = `${item.name || 'Item'}${variantText}`.substring(0, 16); 
+                const name = (item.name || 'Item').substring(0, 16); 
                 const pricePerItem = item.quantity > 0 ? (item.subtotal / item.quantity) : 0;
                 
                 printer.tableCustom([
@@ -328,17 +327,20 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                     { text: String(Math.round(pricePerItem)), align:"RIGHT", width:0.20 },
                     { text: String(Math.round(item.subtotal)), align:"RIGHT", width:0.25 }
                 ]);
-                /* 
+
+                if (item.variantName) {
+                    printer.text(` (${item.variantName})`);
+                }
+                
                 if (item.dealChoices) {
                     try {
                         const choices = JSON.parse(item.dealChoices);
                         choices.forEach(c => {
                             const variant = c.variantName ? `: ${c.variantName}` : '';
-                            printer.text(`   => ${c.productName}${variant}`);
+                            printer.text(`  > ${c.productName}${variant}`.substring(0, 24));
                         });
                     } catch (e) {}
                 }
-                */
             });
 
             printer.text('--------------------------------');
@@ -458,14 +460,21 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
                 .text('----------------');
 
             printData.items.forEach(item => {
-                const variantText = item.variantName ? ` (${item.variantName})` : '';
-                const itemLine = `${item.name}${variantText}`.substring(0, 13);
                 const qtyLine = `${item.quantity}`;
+                // Limit item name to 26 characters to fit with qty on a double-width line
+                const itemName = (item.name || 'Item').substring(0, 13); 
                 
                 printer
                     .style('b')
                     .size(1, 1)
-                    .text(`${itemLine.padEnd(13, ' ')} ${qtyLine.padStart(2, ' ')}`);
+                    .text(`${itemName.padEnd(13, ' ')} ${qtyLine.padStart(2, ' ')}`);
+                
+                if (item.variantName) {
+                    printer
+                        .style('b')
+                        .size(1, 1)
+                        .text(`  (${item.variantName})`.substring(0, 16));
+                }
                     
                 if (item.dealChoices) {
                     try {
@@ -473,7 +482,7 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
                         choices.forEach(c => {
                             const qty = c.quantity ? `${c.quantity}x ` : '';
                             const variant = c.variantName ? `: ${c.variantName}` : '';
-                            printer.text(`  > ${qty}${c.productName}${variant}`);
+                            printer.text(`   > ${qty}${c.productName}${variant}`.substring(0, 24));
                         });
                     } catch (e) {}
                 }
