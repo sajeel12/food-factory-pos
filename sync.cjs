@@ -53,7 +53,8 @@ async function performSync() {
 
         // Pull items from cloud
         try {
-            const response = await fetch(`${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/sync/pull?lastSyncDate=1970-01-01`, { headers });
+            const url = `${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/sync/pull?lastSyncDate=1970-01-01${branchId ? `&branchId=${branchId}` : ''}`;
+            const response = await fetch(url, { headers });
             if (response.ok) {
                 const data = await response.json();
                 if (data.products) {
