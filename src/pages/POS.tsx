@@ -128,6 +128,17 @@ export default function POS() {
         };
         loadProducts();
 
+        if (ipcRenderer) {
+            ipcRenderer.on('sync-completed', loadProducts);
+            
+            // Listen for our manual custom event
+            window.addEventListener('sync-completed', loadProducts);
+            
+            return () => {
+                ipcRenderer.removeListener('sync-completed', loadProducts);
+                window.removeEventListener('sync-completed', loadProducts);
+            };
+        }
         const loadSettings = async () => {
             if (ipcRenderer) {
                 try {

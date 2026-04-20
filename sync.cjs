@@ -1,4 +1,18 @@
 const { getDb } = require('./db.cjs');
+const fs = require('fs');
+const path = require('path');
+
+let API_URL = 'https://food-factory-cloud-backend.onrender.com';
+try {
+    const envPath = path.join(__dirname, '.env');
+    if (fs.existsSync(envPath)) {
+        const envContent = fs.readFileSync(envPath, 'utf8');
+        const match = envContent.match(/^VITE_API_URL=(.*)$/m);
+        if (match && match[1]) {
+            API_URL = match[1].trim();
+        }
+    }
+} catch (e) {}
 
 async function performSync() {
     try {
@@ -33,7 +47,7 @@ async function performSync() {
             }));
 
             try {
-                const response = await fetch(`${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/orders/sync`, {
+                const response = await fetch(`${API_URL}/orders/sync`, {
                     method: 'POST',
                     headers,
                     body: JSON.stringify({ orders: fullOrders })
@@ -53,7 +67,7 @@ async function performSync() {
 
         // Pull items from cloud
         try {
-            const url = `${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/sync/pull?lastSyncDate=1970-01-01${branchId ? `&branchId=${branchId}` : ''}`;
+            const url = `${API_URL}/sync/pull?lastSyncDate=1970-01-01${branchId ? `&branchId=${branchId}` : ''}`;
             const response = await fetch(url, { headers });
             if (response.ok) {
                 const data = await response.json();
@@ -105,7 +119,7 @@ async function performSync() {
 
         // Pull settings from cloud
         try {
-            const response = await fetch(`${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/settings`, { headers });
+            const response = await fetch(`${API_URL}/settings`, { headers });
             if (response.ok) {
                 const settings = await response.json();
                 if (settings && settings.length > 0) {
@@ -123,7 +137,7 @@ async function performSync() {
         // Pull Riders from Cloud
         if (branchId && token) {
             try {
-                const response = await fetch(`${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/riders?branchId=${branchId}`, { headers });
+                const response = await fetch(`${API_URL}/riders?branchId=${branchId}`, { headers });
                 if (response.ok) {
                     const riders = await (response.json().catch(() => []));
                     const clearRiders = db.prepare('DELETE FROM riders');
@@ -140,7 +154,7 @@ async function performSync() {
 
             // Sync Customers
             try {
-                const response = await fetch(`${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/customers`, { headers });
+                const response = await fetch(`${API_URL}/customers`, { headers });
                 if (response.ok) {
                     const customers = await (response.json().catch(() => []));
                     const clearCustomers = db.prepare('DELETE FROM customers');
@@ -164,7 +178,7 @@ async function performSync() {
 
             // Sync Categories
             try {
-                const catUrl = branchId && branchId !== 'null' ? `${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/categories?branchId=${branchId}` : `${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/categories`;
+                const catUrl = branchId && branchId !== 'null' ? `${API_URL}/categories?branchId=${branchId}` : `${API_URL}/categories`;
                 const response = await fetch(catUrl, { headers });
                 if (response.ok) {
                     const categories = await (response.json().catch(() => []));
@@ -184,7 +198,7 @@ async function performSync() {
 
             // Sync Vouchers
             try {
-                const response = await fetch(`${process.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/vouchers?branchId=${branchId}`, { headers });
+                const response = await fetch(`${API_URL}/vouchers?branchId=${branchId}`, { headers });
                 if (response.ok) {
                     const vouchers = await (response.json().catch(() => []));
                     const clearVouchers = db.prepare('DELETE FROM vouchers');
@@ -216,9 +230,12 @@ async function performSync() {
     }
 }
 
-function startSyncWorker() {
+function startSyncWorker(onSyncComplete) {
     console.log("Starting Background Sync Worker...");
-    setInterval(performSync, 15000); // 15 seconds
+    setInterval(async () => {
+        await performSync();
+        if (onSyncComplete) onSyncComplete();
+    }, 15000); // 15 seconds
 }
 
 module.exports = { startSyncWorker, performSync };

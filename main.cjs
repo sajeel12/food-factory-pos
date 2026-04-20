@@ -389,9 +389,6 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                 .text(' ')
                 .align('ct')
                 .style('normal')
-                .text('FREE HOME DELIVERY (Min Order 500Rs)')
-                .text('Timing: 12:30 PM to 01:00 AM')
-                .text(' ')
                 .text(`Printed On: ${dateStr} ${timeStr}`)
                 .text(`Bill ID: ${printData.id}`)
                 .text('Developed by Food Factory')
@@ -679,7 +676,11 @@ ipcMain.handle('force-sync', async () => {
 app.whenReady().then(() => {
     initDb();
     createWindow();
-    startSyncWorker();
+    startSyncWorker(() => {
+        BrowserWindow.getAllWindows().forEach(win => {
+            if (!win.isDestroyed()) win.webContents.send('sync-completed');
+        });
+    });
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
