@@ -143,15 +143,19 @@ ipcMain.handle('create-order', async (event, orderData) => {
         if (existingOrder && existingOrder.dailyOrderNumber) {
             finalDailyOrderNumber = existingOrder.dailyOrderNumber;
         } else {
-            // Get today's date in local time YYYY-MM-DD
+            // Get business date (subtract 6 hours from current time)
+            // This ensures 1:00 AM orders are grouped into the previous day's shift
             const now = new Date();
-            const year = now.getFullYear();
-            const month = String(now.getMonth() + 1).padStart(2, '0');
-            const day = String(now.getDate()).padStart(2, '0');
-            const localToday = `${year}-${month}-${day}`;
+            const bizDate = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+            const year = bizDate.getFullYear();
+            const month = String(bizDate.getMonth() + 1).padStart(2, '0');
+            const day = String(bizDate.getDate()).padStart(2, '0');
+            const localBizDate = `${year}-${month}-${day}`;
             
-            const prevOrderQuery = db.prepare("SELECT MAX(dailyOrderNumber) as maxNum FROM orders WHERE createdAt LIKE ?");
-            const prevOrder = prevOrderQuery.get(`${localToday}%`);
+            // SQLite's datetime() function adjusts the UTC createdAt to local time, 
+            // then subtracts 6 hours to match our business day logic.
+            const prevOrderQuery = db.prepare("SELECT MAX(dailyOrderNumber) as maxNum FROM orders WHERE datetime(createdAt, 'localtime', '-6 hours') LIKE ?");
+            const prevOrder = prevOrderQuery.get(`${localBizDate}%`);
             finalDailyOrderNumber = (prevOrder && prevOrder.maxNum ? prevOrder.maxNum : 0) + 1;
         }
 
