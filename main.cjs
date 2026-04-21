@@ -405,7 +405,7 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                 .text(' ');
 
             const isCash = printData.paymentMethod === 'CASH' || printData.paymentMethod === 'Cash';
-            if (drawerEnabled && isCash) printer.cashdraw(2);
+            // if (drawerEnabled && isCash) printer.cashdraw(2);
             
             printer.cut().close();
         });
@@ -528,7 +528,8 @@ ipcMain.handle('open-cash-drawer', async () => {
 
         device.open((err) => {
             if (err) return console.error("Drawer kick error:", err);
-            printer.cashdraw(2).close();
+            // printer.cashdraw(2).close();
+            printer.close();
         });
         return { success: true };
     } catch (e) {
