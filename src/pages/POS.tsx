@@ -61,6 +61,7 @@ export default function POS() {
     const [tableNo, setTableNo] = useState('');
     const [pendingOrders, setPendingOrders] = useState<any[]>([]);
     const [activePendingOrderId, setActivePendingOrderId] = useState<string | null>(null);
+    const [originalCart, setOriginalCart] = useState<any[]>([]);
     const [queueSearch, setQueueSearch] = useState('');
     const [deliveryModalOrder, setDeliveryModalOrder] = useState<any | null>(null);
     const [riders, setRiders] = useState<{ id: string; name: string }[]>([]);
@@ -295,7 +296,7 @@ export default function POS() {
     };
 
     const subtotal = cart.reduce((sum, item) => sum + (Number(item.price) * Number(item.qty)), 0);
-    const deliveryFee = (checkoutMode === 'Delivery' && !waiveDeliveryFee) ? configDeliveryFee : 0;
+    const deliveryFee = ((checkoutMode === 'Delivery' || !!deliveryInfo.address) && !waiveDeliveryFee) ? configDeliveryFee : 0;
     
     let discount = 0;
     if (appliedVoucher) {
@@ -357,8 +358,43 @@ export default function POS() {
                 if (orderResult.dailyOrderNumber) {
                     (payload as any).dailyOrderNumber = orderResult.dailyOrderNumber;
                 }
-                // Kitchen ticket prints immediately — no preview needed
-                await ipcRenderer.invoke('print-kitchen', payload);
+
+                let kitchenPayload = null;
+                if (activePendingOrderId) {
+                    const newItems = [];
+                    for (const item of cart) {
+                        const orig = originalCart.find(o => o.uniqueId === item.uniqueId);
+                        if (!orig) {
+                            newItems.push({ ...item });
+                        } else if (item.qty > orig.qty) {
+                            newItems.push({ ...item, qty: item.qty - orig.qty });
+                        }
+                    }
+                    if (newItems.length > 0) {
+                        kitchenPayload = {
+                            ...payload,
+                            isUpdate: true,
+                            items: newItems.map(item => ({
+                                id: 'ITM-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
+                                orderId: orderId,
+                                productId: item.id,
+                                variantId: item.variantId || null,
+                                variantName: item.variantName || null,
+                                name: item.name,
+                                quantity: item.qty,
+                                subtotal: item.price * item.qty,
+                                dealChoices: item.dealChoices ? JSON.stringify(item.dealChoices) : null
+                            }))
+                        };
+                    }
+                } else {
+                    kitchenPayload = payload;
+                }
+
+                // Kitchen ticket prints immediately ONLY if there are items to print
+                if (kitchenPayload) {
+                    await ipcRenderer.invoke('print-kitchen', kitchenPayload);
+                }
 
                 // Show receipt preview instead of auto-printing
                 setReceiptData(payload);
@@ -367,6 +403,7 @@ export default function POS() {
                 setDeliveryInfo({ name: '', phone: '', address: '' });
                 setTableNo('');
                 setCart([]);
+                setOriginalCart([]);
                 setAppliedVoucher(null);
                 setActivePendingOrderId(null);
                 window.dispatchEvent(new Event('sync-completed'));
@@ -403,6 +440,10 @@ export default function POS() {
                     status: 'Pending',
                     customerName: deliveryInfo.name || null,
                     customerPhone: deliveryInfo.phone || null,
+                    customerAddress: deliveryInfo.address || null,
+                    deliveryFee: deliveryFee || 0,
+                    voucherId: appliedVoucher?.id || null,
+                    discount: discount || 0,
                     orderType: orderType,
                     tableNo: orderType === 'DINE_IN' ? tableNo : null,
                     branchId: user?.branchId || null,
@@ -421,13 +462,52 @@ export default function POS() {
                     }))
                 };
 
+                let kitchenPayload = null;
+                
+                if (activePendingOrderId) {
+                    const newItems = [];
+                    for (const item of cart) {
+                        const orig = originalCart.find(o => o.uniqueId === item.uniqueId);
+                        if (!orig) {
+                            newItems.push({ ...item });
+                        } else if (item.qty > orig.qty) {
+                            newItems.push({ ...item, qty: item.qty - orig.qty });
+                        }
+                    }
+                    
+                    if (newItems.length > 0) {
+                        kitchenPayload = {
+                            ...payload,
+                            isUpdate: true,
+                            items: newItems.map(item => ({
+                                id: 'ITM-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5),
+                                orderId: orderId,
+                                productId: item.id,
+                                variantId: item.variantId || null,
+                                variantName: item.variantName || null,
+                                name: item.name,
+                                quantity: item.qty,
+                                subtotal: item.price * item.qty,
+                                dealChoices: item.dealChoices ? JSON.stringify(item.dealChoices) : null
+                            }))
+                        };
+                    }
+                } else {
+                    kitchenPayload = payload;
+                }
+
                 const orderResult = await ipcRenderer.invoke('create-order', payload);
                 if (orderResult.dailyOrderNumber) {
                     (payload as any).dailyOrderNumber = orderResult.dailyOrderNumber;
+                    if (kitchenPayload) (kitchenPayload as any).dailyOrderNumber = orderResult.dailyOrderNumber;
                 }
-                await ipcRenderer.invoke('print-kitchen', payload);
+                
+                if (kitchenPayload) {
+                    await ipcRenderer.invoke('print-kitchen', kitchenPayload);
+                }
 
                 setCart([]);
+                setOriginalCart([]);
                 setTableNo('');
                 setDeliveryInfo({ name: '', phone: '', address: '' });
                 setAppliedVoucher(null);
@@ -442,10 +522,6 @@ export default function POS() {
     };
 
     const handlePendingOrderClick = (order: any) => {
-        if (order.customerAddress) {
-            setDeliveryModalOrder(order);
-            return;
-        }
         resumeOrder(order);
     };
 
@@ -478,6 +554,7 @@ export default function POS() {
             // Unselect if already selected
             setActivePendingOrderId(null);
             setCart([]);
+            setOriginalCart([]);
             setTableNo('');
             setDeliveryInfo({ name: '', phone: '', address: '' });
             return;
@@ -501,6 +578,7 @@ export default function POS() {
             }));
 
             setCart(mappedCart);
+            setOriginalCart(mappedCart);
             setOrderType(order.orderType || 'TAKE_AWAY');
             setTableNo(order.tableNo || '');
             setDeliveryInfo({ name: order.customerName || '', phone: order.customerPhone || '', address: order.customerAddress || '' });
@@ -814,10 +892,16 @@ export default function POS() {
                                 <button
                                     onClick={handleHoldOrder}
                                     disabled={cart.length === 0 || isProcessing}
-                                    className="flex flex-col items-center justify-center py-4 rounded-2xl font-bold bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors"
+                                    className={`flex flex-col items-center justify-center py-4 rounded-2xl font-bold transition-colors ${
+                                        activePendingOrderId 
+                                        ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-md' 
+                                        : 'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                                    }`}
                                 >
                                     <Clock size={20} className="mb-1" />
-                                    <span className="text-xs font-black tracking-tighter">HOLD</span>
+                                    <span className="text-xs font-black tracking-tighter">
+                                        {activePendingOrderId ? 'UPDATE' : 'HOLD'}
+                                    </span>
                                 </button>
                             </>
                         )}
@@ -1143,53 +1227,86 @@ export default function POS() {
                             if (diff !== 0) return diff;
                             return (b.dailyOrderNumber || 0) - (a.dailyOrderNumber || 0);
                         })
-                        .map(order => (
-                            <div
-                                key={order.id}
-                                onClick={() => handlePendingOrderClick(order)}
-                                className={`group p-4 rounded-2xl border-2 transition-all cursor-pointer relative overflow-hidden ${
-                                    activePendingOrderId === order.id 
-                                    ? 'bg-blue-600 border-blue-600 shadow-lg scale-[1.02]' 
-                                    : 'bg-white border-gray-100 hover:border-blue-200 hover:shadow-md'
-                                }`}
-                            >
-                                <div className="flex justify-between items-start mb-2 relative z-10">
-                                    <div>
-                                        <p className={`text-[10px] font-black uppercase tracking-widest ${activePendingOrderId === order.id ? 'text-blue-100' : 'text-gray-400'}`}>
-                                            Order #{order.id}
+                        .map(order => {
+                            const isDelivery = !!order.customerAddress;
+                            const isDineIn = order.orderType === 'DINE_IN';
+                            
+                            let bgColor = 'bg-white';
+                            let borderColor = 'border-gray-100';
+                            let hoverBorder = 'hover:border-blue-200';
+                            let badgeClass = 'bg-amber-100 text-amber-700';
+                            let badgeText = isDineIn ? `TABLE ${order.tableNo || '--'}` : isDelivery ? 'DELIVERY' : 'TAKE AWAY';
+
+                            if (isDelivery) {
+                                bgColor = 'bg-purple-50/50';
+                                borderColor = 'border-purple-100';
+                                hoverBorder = 'hover:border-purple-300';
+                                badgeClass = 'bg-purple-100 text-purple-700';
+                            } else if (isDineIn) {
+                                bgColor = 'bg-emerald-50/50';
+                                borderColor = 'border-emerald-100';
+                                hoverBorder = 'hover:border-emerald-300';
+                                badgeClass = 'bg-emerald-100 text-emerald-700';
+                            } else {
+                                bgColor = 'bg-orange-50/50';
+                                borderColor = 'border-orange-100';
+                                hoverBorder = 'hover:border-orange-300';
+                                badgeClass = 'bg-orange-100 text-orange-700';
+                            }
+
+                            if (activePendingOrderId === order.id) {
+                                bgColor = isDelivery ? 'bg-purple-600' : isDineIn ? 'bg-emerald-600' : 'bg-blue-600';
+                                borderColor = isDelivery ? 'border-purple-600' : isDineIn ? 'border-emerald-600' : 'border-blue-600';
+                                badgeClass = 'bg-white/20 text-white';
+                            }
+
+                            return (
+                                <div
+                                    key={order.id}
+                                    onClick={() => handlePendingOrderClick(order)}
+                                    className={`group p-4 rounded-2xl border-2 transition-all cursor-pointer relative overflow-hidden ${bgColor} ${borderColor} hover:shadow-md ${activePendingOrderId === order.id ? 'shadow-lg scale-[1.02]' : hoverBorder}`}
+                                >
+                                    <div className="flex justify-between items-start mb-2 relative z-10">
+                                        <div>
+                                            <p className={`text-[10px] font-black uppercase tracking-widest ${activePendingOrderId === order.id ? 'text-white/70' : 'text-gray-400'}`}>
+                                                Order #{order.id}
+                                            </p>
+                                            <h3 className={`font-black text-lg ${activePendingOrderId === order.id ? 'text-white' : 'text-gray-900'}`}>
+                                                PKR {Number(order.total).toFixed(0)}
+                                            </h3>
+                                        </div>
+                                        <div className={`px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-tighter ${badgeClass}`}>
+                                            {badgeText}
+                                        </div>
+                                    </div>
+
+                                    {order.customerName && (
+                                        <p className={`text-xs font-bold mb-2 flex items-center ${activePendingOrderId === order.id ? 'text-white/90' : 'text-gray-500'}`}>
+                                            <span className="opacity-60 mr-1 italic">Customer:</span> {order.customerName}
                                         </p>
-                                        <h3 className={`font-black text-lg ${activePendingOrderId === order.id ? 'text-white' : 'text-gray-900'}`}>
-                                            PKR {Number(order.total).toFixed(0)}
-                                        </h3>
+                                    )}
+
+                                    <div className={`text-[10px] font-bold py-2 border-t mt-2 ${activePendingOrderId === order.id ? 'border-white/20 text-white/80' : 'border-gray-100 text-gray-400'}`}>
+                                        {new Date(order.createdAt && order.createdAt.includes('T') ? order.createdAt : (order.createdAt || '').replace(' ', 'T') + 'Z').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {order.cashierName}
                                     </div>
-                                    <div className={`px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-tighter ${
-                                        activePendingOrderId === order.id ? 'bg-white/20 text-white' : 'bg-amber-100 text-amber-700'
-                                    }`}>
-                                        {order.orderType === 'DINE_IN'
-                                            ? `TABLE ${order.tableNo || '--'}`
-                                            : order.customerAddress
-                                                ? 'DELIVERY'
-                                                : 'TAKE AWAY'}
-                                    </div>
+
+                                    {isDelivery && (
+                                        <button 
+                                            onClick={(e) => { e.stopPropagation(); setDeliveryModalOrder(order); }}
+                                            className={`absolute bottom-3 right-3 p-2 rounded-lg transition-colors shadow-sm ${activePendingOrderId === order.id ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-purple-100 text-purple-600 hover:bg-purple-200'}`}
+                                            title="Manage Delivery"
+                                        >
+                                            <Truck size={16} />
+                                        </button>
+                                    )}
+                                    {activePendingOrderId === order.id && !isDelivery && (
+                                        <div className="absolute top-0 right-0 p-2 text-white/50">
+                                            <CheckCircle2 size={16} />
+                                        </div>
+                                    )}
                                 </div>
-
-                                {order.customerName && (
-                                    <p className={`text-xs font-bold mb-2 flex items-center ${activePendingOrderId === order.id ? 'text-blue-50' : 'text-gray-500'}`}>
-                                        <span className="opacity-60 mr-1 italic">Customer:</span> {order.customerName}
-                                    </p>
-                                )}
-
-                                <div className={`text-[10px] font-bold py-2 border-t mt-2 ${activePendingOrderId === order.id ? 'border-white/20 text-blue-100' : 'border-gray-50 text-gray-400'}`}>
-                                    {new Date(order.createdAt && order.createdAt.includes('T') ? order.createdAt : (order.createdAt || '').replace(' ', 'T') + 'Z').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {order.cashierName}
-                                </div>
-
-                                {activePendingOrderId === order.id && (
-                                    <div className="absolute top-0 right-0 p-2 text-white/50">
-                                        <CheckCircle2 size={16} />
-                                    </div>
-                                )}
-                            </div>
-                        ))}
+                            );
+                        })}
                     
                     {pendingOrders.length === 0 && (
                         <div className="h-full flex flex-col items-center justify-center text-center p-8 opacity-40">

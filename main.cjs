@@ -356,7 +356,7 @@ ipcMain.handle('print-receipt', async (event, printData) => {
 
             printer.tableCustom([
                 { text: "Bill Amount:", align:"RIGHT", width:0.60, style: 'B' },
-                { text: String(Math.round(printData.total - (printData.deliveryFee || 0))), align:"RIGHT", width:0.40, style: 'B' }
+                { text: String(Math.round(printData.total - (printData.deliveryFee || 0) + (printData.discount || 0))), align:"RIGHT", width:0.40, style: 'B' }
             ]);
 
             if (printData.deliveryFee > 0) {
@@ -442,7 +442,7 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
                 .font('a')
                 .style('b')
                 .size(2, 2)
-                .text('KITCHEN SLIP')
+                .text(printData.isUpdate ? 'UPDATE TICKET' : 'KITCHEN SLIP')
                 .size(0, 0)
                 .text('--------------------------------')
                 .text(' ')
