@@ -111,7 +111,7 @@ ipcMain.handle('get-categories', async () => {
 ipcMain.handle('create-order', async (event, orderData) => {
     const db = getDb();
     const { id, total, status, items, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress, deliveryFee, orderType, tableNo } = orderData;
-    const insertOrder = db.prepare('INSERT OR REPLACE INTO orders (id, total, status, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress, deliveryFee, dailyOrderNumber, orderType, tableNo) VALUES (@id, @total, @status, @paymentMethod, @tenderedAmount, @customerName, @customerPhone, @customerAddress, @deliveryFee, @dailyOrderNumber, @orderType, @tableNo)');
+    const insertOrder = db.prepare('INSERT OR REPLACE INTO orders (id, total, status, paymentMethod, tenderedAmount, customerName, customerPhone, customerAddress, deliveryFee, dailyOrderNumber, orderType, tableNo, createdAt) VALUES (@id, @total, @status, @paymentMethod, @tenderedAmount, @customerName, @customerPhone, @customerAddress, @deliveryFee, @dailyOrderNumber, @orderType, @tableNo, @createdAt)');
     const deleteItems = db.prepare('DELETE FROM order_items WHERE orderId = ?');
     const insertItem = db.prepare('INSERT INTO order_items (id, orderId, productId, variantId, variantName, quantity, subtotal, dealChoices) VALUES (@id, @orderId, @productId, @variantId, @variantName, @quantity, @subtotal, @dealChoices)');
 
@@ -136,9 +136,9 @@ ipcMain.handle('create-order', async (event, orderData) => {
         const pm = paymentMethod || 'CASH';
         const ta = tenderedAmount !== undefined ? tenderedAmount : total;
         
-        // Calculate daily order number
+        // Calculate daily order number; preserve createdAt for existing orders
         let finalDailyOrderNumber = 0;
-        const existingOrder = db.prepare("SELECT dailyOrderNumber FROM orders WHERE id = ?").get(id);
+        const existingOrder = db.prepare("SELECT dailyOrderNumber, createdAt FROM orders WHERE id = ?").get(id);
         
         if (existingOrder && existingOrder.dailyOrderNumber) {
             finalDailyOrderNumber = existingOrder.dailyOrderNumber;
@@ -159,6 +159,10 @@ ipcMain.handle('create-order', async (event, orderData) => {
             finalDailyOrderNumber = (prevOrder && prevOrder.maxNum ? prevOrder.maxNum : 0) + 1;
         }
 
+        const createdAt = (existingOrder && existingOrder.createdAt)
+            ? existingOrder.createdAt
+            : (orderData.createdAt || new Date().toISOString());
+
         transaction({
             id, total, status, paymentMethod: pm, tenderedAmount: ta,
             customerName: customerName || null,
@@ -169,7 +173,8 @@ ipcMain.handle('create-order', async (event, orderData) => {
             discount: orderData.discount || 0,
             orderType: orderType || 'TAKE_AWAY',
             tableNo: tableNo || null,
-            dailyOrderNumber: finalDailyOrderNumber
+            dailyOrderNumber: finalDailyOrderNumber,
+            createdAt
         }, items);
         return { success: true, dailyOrderNumber: finalDailyOrderNumber };
     } catch (e) {
@@ -534,7 +539,7 @@ ipcMain.handle('open-cash-drawer', async () => {
 ipcMain.handle('get-pending-orders', async () => {
     try {
         const db = getDb();
-        return db.prepare("SELECT * FROM orders WHERE status = 'Pending' ORDER BY createdAt ASC").all();
+        return db.prepare("SELECT * FROM orders WHERE status = 'Pending' ORDER BY createdAt DESC").all();
     } catch (e) {
         console.error("Failed to fetch pending orders:", e);
         return [];

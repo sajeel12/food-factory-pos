@@ -62,6 +62,8 @@ export default function POS() {
     const [pendingOrders, setPendingOrders] = useState<any[]>([]);
     const [activePendingOrderId, setActivePendingOrderId] = useState<string | null>(null);
     const [queueSearch, setQueueSearch] = useState('');
+    const [deliveryModalOrder, setDeliveryModalOrder] = useState<any | null>(null);
+    const [riders, setRiders] = useState<{ id: string; name: string }[]>([]);
 
     const handlePhoneChange = async (val: string) => {
         setDeliveryInfo({ ...deliveryInfo, phone: val });
@@ -128,21 +130,11 @@ export default function POS() {
         };
         loadProducts();
 
-        if (ipcRenderer) {
-            ipcRenderer.on('sync-completed', loadProducts);
-            
-            // Listen for our manual custom event
-            window.addEventListener('sync-completed', loadProducts);
-            
-            return () => {
-                ipcRenderer.removeListener('sync-completed', loadProducts);
-                window.removeEventListener('sync-completed', loadProducts);
-            };
-        }
         const loadSettings = async () => {
             if (ipcRenderer) {
                 try {
                     const settings = await ipcRenderer.invoke('get-settings');
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
                     const fee = settings.find((s: any) => s.key === 'DELIVERY_FEE');
                     if (fee) setConfigDeliveryFee(Number(fee.value) || 0);
                 } catch (e) {
@@ -151,23 +143,41 @@ export default function POS() {
             }
         };
         loadSettings();
-        
+
         const fetchPending = async () => {
             if (ipcRenderer) {
                 const pending = await ipcRenderer.invoke('get-pending-orders');
                 setPendingOrders(pending);
             }
         };
+        const fetchRiders = async () => {
+            if (ipcRenderer) {
+                try {
+                    const r = await ipcRenderer.invoke('get-riders');
+                    setRiders(r || []);
+                } catch (e) {
+                    console.error('Failed to load riders', e);
+                }
+            }
+        };
         fetchPending();
+        fetchRiders();
         const pendingInterval = setInterval(fetchPending, 10000);
 
         const handleSync = () => {
             loadProducts();
             loadSettings();
             fetchPending();
+            fetchRiders();
         };
+        if (ipcRenderer) {
+            ipcRenderer.on('sync-completed', handleSync);
+        }
         window.addEventListener('sync-completed', handleSync);
         return () => {
+            if (ipcRenderer) {
+                ipcRenderer.removeListener('sync-completed', handleSync);
+            }
             window.removeEventListener('sync-completed', handleSync);
             clearInterval(pendingInterval);
         };
@@ -429,6 +439,38 @@ export default function POS() {
             }
         }
         setIsProcessing(false);
+    };
+
+    const handlePendingOrderClick = (order: any) => {
+        if (order.customerAddress) {
+            setDeliveryModalOrder(order);
+            return;
+        }
+        resumeOrder(order);
+    };
+
+    const assignRider = async (orderId: string, riderName: string) => {
+        if (!ipcRenderer) return;
+        try {
+            await ipcRenderer.invoke('update-order-status', { id: orderId, status: 'Assigned', rider: riderName });
+            setDeliveryModalOrder(null);
+            window.dispatchEvent(new Event('sync-completed'));
+        } catch (e) {
+            console.error('Failed to assign rider', e);
+            alert('Failed to assign rider');
+        }
+    };
+
+    const markDeliveryComplete = async (orderId: string) => {
+        if (!ipcRenderer) return;
+        try {
+            await ipcRenderer.invoke('update-order-status', { id: orderId, status: 'Completed' });
+            setDeliveryModalOrder(null);
+            window.dispatchEvent(new Event('sync-completed'));
+        } catch (e) {
+            console.error('Failed to mark delivered', e);
+            alert('Failed to mark delivered');
+        }
     };
 
     const resumeOrder = async (order: any) => {
@@ -1000,12 +1042,63 @@ export default function POS() {
             
             {/* Deal Choice Modal */}
             {selectedDealForChoices && (
-                <DealChoiceModal 
+                <DealChoiceModal
                     deal={selectedDealForChoices}
                     allProducts={products}
                     onClose={() => setSelectedDealForChoices(null)}
                     onComplete={(choices) => handleDealChoicesComplete(selectedDealForChoices, choices)}
                 />
+            )}
+
+            {/* Delivery Order Manage Modal */}
+            {deliveryModalOrder && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 relative">
+                        <button onClick={() => setDeliveryModalOrder(null)} className="absolute top-4 right-4 p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors outline-none"><X size={20} /></button>
+                        <div className="mb-5">
+                            <p className="text-[10px] font-black uppercase tracking-widest text-blue-600">Delivery Order</p>
+                            <h2 className="text-2xl font-black text-gray-900">#{deliveryModalOrder.id}</h2>
+                            <p className="text-sm font-semibold text-gray-600 mt-1">
+                                {deliveryModalOrder.customerName || '—'} • {deliveryModalOrder.customerPhone || '—'}
+                            </p>
+                            <p className="text-xs text-gray-500 mt-1">{deliveryModalOrder.customerAddress}</p>
+                            <p className="text-lg font-black text-gray-900 mt-3">PKR {Number(deliveryModalOrder.total).toFixed(0)}</p>
+                        </div>
+
+                        {deliveryModalOrder.status === 'Pending' && (
+                            <div>
+                                <h3 className="font-bold text-gray-700 text-xs tracking-widest uppercase mb-3">Assign Rider</h3>
+                                {riders.length === 0 ? (
+                                    <p className="text-sm text-gray-500 italic p-3 text-center bg-gray-50 rounded-xl">No available riders. Check admin panel or wait for sync.</p>
+                                ) : (
+                                    <div className="space-y-2 max-h-56 overflow-y-auto">
+                                        {riders.map(r => (
+                                            <button
+                                                key={r.id}
+                                                onClick={() => assignRider(deliveryModalOrder.id, r.name)}
+                                                className="w-full p-3 bg-white border border-gray-200 rounded-2xl hover:border-blue-500 hover:bg-blue-50 flex justify-between items-center font-medium"
+                                            >
+                                                <div className="flex items-center space-x-3">
+                                                    <Truck size={18} className="text-gray-400" />
+                                                    <span>{r.name}</span>
+                                                </div>
+                                                <span className="text-blue-600 font-bold text-xs">ASSIGN</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        <button
+                            onClick={() => markDeliveryComplete(deliveryModalOrder.id)}
+                            className="w-full mt-5 bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-2xl shadow-lg flex items-center justify-center space-x-2 transition-transform active:scale-95"
+                        >
+                            <CheckCircle2 size={20} />
+                            <span>Mark Delivered</span>
+                        </button>
+                    </div>
+                </div>
             )}
 
             {/* Receipt Preview Modal */}
@@ -1044,11 +1137,16 @@ export default function POS() {
                                    (order.tableNo || '').toLowerCase().includes(term) ||
                                    (order.customerName || '').toLowerCase().includes(term);
                         })
-                        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+                        .sort((a, b) => {
+                            const parseDate = (s: string) => new Date(s && s.includes('T') ? s : (s || '').replace(' ', 'T') + 'Z');
+                            const diff = parseDate(b.createdAt).getTime() - parseDate(a.createdAt).getTime();
+                            if (diff !== 0) return diff;
+                            return (b.dailyOrderNumber || 0) - (a.dailyOrderNumber || 0);
+                        })
                         .map(order => (
                             <div
                                 key={order.id}
-                                onClick={() => resumeOrder(order)}
+                                onClick={() => handlePendingOrderClick(order)}
                                 className={`group p-4 rounded-2xl border-2 transition-all cursor-pointer relative overflow-hidden ${
                                     activePendingOrderId === order.id 
                                     ? 'bg-blue-600 border-blue-600 shadow-lg scale-[1.02]' 
@@ -1067,7 +1165,11 @@ export default function POS() {
                                     <div className={`px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-tighter ${
                                         activePendingOrderId === order.id ? 'bg-white/20 text-white' : 'bg-amber-100 text-amber-700'
                                     }`}>
-                                        {order.orderType === 'DINE_IN' ? `TABLE ${order.tableNo || '--'}` : 'TAKE AWAY'}
+                                        {order.orderType === 'DINE_IN'
+                                            ? `TABLE ${order.tableNo || '--'}`
+                                            : order.customerAddress
+                                                ? 'DELIVERY'
+                                                : 'TAKE AWAY'}
                                     </div>
                                 </div>
 
@@ -1078,7 +1180,7 @@ export default function POS() {
                                 )}
 
                                 <div className={`text-[10px] font-bold py-2 border-t mt-2 ${activePendingOrderId === order.id ? 'border-white/20 text-blue-100' : 'border-gray-50 text-gray-400'}`}>
-                                    {new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {order.cashierName}
+                                    {new Date(order.createdAt && order.createdAt.includes('T') ? order.createdAt : (order.createdAt || '').replace(' ', 'T') + 'Z').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • {order.cashierName}
                                 </div>
 
                                 {activePendingOrderId === order.id && (
