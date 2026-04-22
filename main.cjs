@@ -135,11 +135,11 @@ ipcMain.handle('create-order', async (event, orderData) => {
     try {
         const pm = paymentMethod || 'CASH';
         const ta = tenderedAmount !== undefined ? tenderedAmount : total;
-        
+
         // Calculate daily order number; preserve createdAt for existing orders
         let finalDailyOrderNumber = 0;
         const existingOrder = db.prepare("SELECT dailyOrderNumber, createdAt FROM orders WHERE id = ?").get(id);
-        
+
         if (existingOrder && existingOrder.dailyOrderNumber) {
             finalDailyOrderNumber = existingOrder.dailyOrderNumber;
         } else {
@@ -151,7 +151,7 @@ ipcMain.handle('create-order', async (event, orderData) => {
             const month = String(bizDate.getMonth() + 1).padStart(2, '0');
             const day = String(bizDate.getDate()).padStart(2, '0');
             const localBizDate = `${year}-${month}-${day}`;
-            
+
             // SQLite's datetime() function adjusts the UTC createdAt to local time, 
             // then subtracts 6 hours to match our business day logic.
             const prevOrderQuery = db.prepare("SELECT MAX(dailyOrderNumber) as maxNum FROM orders WHERE datetime(createdAt, 'localtime', '-6 hours') LIKE ?");
@@ -232,7 +232,8 @@ ipcMain.handle('print-receipt', async (event, printData) => {
         const type = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_TYPE'").get()?.value || 'NONE';
         const addr = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_ADDR'").get()?.value;
         const port = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_PORT'").get()?.value || '9100';
-        const drawerEnabled = db.prepare("SELECT value FROM settings WHERE key = 'CASH_DRAWER_ENABLED'").get()?.value === 'true';
+        // const drawerEnabled = db.prepare("SELECT value FROM settings WHERE key = 'CASH_DRAWER_ENABLED'").get()?.value === 'false';
+        const drawerEnabled = false;
 
         if (type === 'NONE') return { success: true, message: 'Printer disabled' };
 
@@ -243,7 +244,7 @@ ipcMain.handle('print-receipt', async (event, printData) => {
         try {
             const userStr = db.prepare("SELECT value FROM settings WHERE key = 'POS_SESSION_USER'").get()?.value;
             if (userStr) sessionUser = JSON.parse(userStr);
-        } catch (e) {}
+        } catch (e) { }
 
         const printer = new escpos.Printer(device);
 
@@ -254,12 +255,12 @@ ipcMain.handle('print-receipt', async (event, printData) => {
             }
             let dateObj = new Date(printData.createdAt);
             let dateStr = dateObj.toLocaleDateString();
-            let timeStr = dateObj.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+            let timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
             const isDelivery = !!printData.customerAddress;
             const isDineIn = printData.orderType === 'DINE_IN';
             const orderTypeStr = isDineIn ? 'DINE IN' : (isDelivery ? 'DELIVERY' : 'TAKE AWAY');
-            
+
             let detailStr = '';
             if (isDineIn) {
                 detailStr = `Table No: ${printData.tableNo || '-'}`;
@@ -273,7 +274,7 @@ ipcMain.handle('print-receipt', async (event, printData) => {
             try {
                 const userStr = db.prepare("SELECT value FROM settings WHERE key = 'POS_SESSION_USER'").get()?.value;
                 if (userStr) sessionUser = JSON.parse(userStr);
-            } catch (e) {}
+            } catch (e) { }
 
             const rawAddress = printData.branchAddress || sessionUser?.branchAddress || '30 FOOT BAZAR, Near masjid Aqsa. St# 24. Shaheen Abad Gujranwala';
             const rawCashier = printData.cashierName || sessionUser?.username || 'FOOD FACTORY';
@@ -293,9 +294,9 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                 .text(' ')
                 .font('a')
                 .text(addressLine1);
-            
+
             if (addressLine2) printer.text(addressLine2);
-                
+
             printer
                 .text(' ')
                 .style('b')
@@ -319,28 +320,28 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                 .text('--------------------------------');
 
             printer.tableCustom([
-                { text:"Deal", align:"LEFT", width:0.40 },
-                { text:"Qty", align:"CENTER", width:0.15 },
-                { text:"Price", align:"RIGHT", width:0.20 },
-                { text:"Total", align:"RIGHT", width:0.25 }
+                { text: "Deal", align: "LEFT", width: 0.40 },
+                { text: "Qty", align: "CENTER", width: 0.15 },
+                { text: "Price", align: "RIGHT", width: 0.20 },
+                { text: "Total", align: "RIGHT", width: 0.25 }
             ]);
             printer.text('--------------------------------');
 
             printData.items.forEach(item => {
-                const name = (item.name || 'Item').substring(0, 16); 
+                const name = (item.name || 'Item').substring(0, 16);
                 const pricePerItem = item.quantity > 0 ? (item.subtotal / item.quantity) : 0;
-                
+
                 printer.tableCustom([
-                    { text: name, align:"LEFT", width:0.40 },
-                    { text: String(item.quantity), align:"CENTER", width:0.15 },
-                    { text: String(Math.round(pricePerItem)), align:"RIGHT", width:0.20 },
-                    { text: String(Math.round(item.subtotal)), align:"RIGHT", width:0.25 }
+                    { text: name, align: "LEFT", width: 0.40 },
+                    { text: String(item.quantity), align: "CENTER", width: 0.15 },
+                    { text: String(Math.round(pricePerItem)), align: "RIGHT", width: 0.20 },
+                    { text: String(Math.round(item.subtotal)), align: "RIGHT", width: 0.25 }
                 ]);
 
                 if (item.variantName) {
                     printer.text(` (${item.variantName})`);
                 }
-                
+
                 if (item.dealChoices) {
                     try {
                         const choices = JSON.parse(item.dealChoices);
@@ -348,35 +349,35 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                             const variant = c.variantName ? `: ${c.variantName}` : '';
                             printer.text(`  > ${c.productName}${variant}`.substring(0, 24));
                         });
-                    } catch (e) {}
+                    } catch (e) { }
                 }
             });
 
             printer.text('--------------------------------');
 
             printer.tableCustom([
-                { text: "Bill Amount:", align:"RIGHT", width:0.60, style: 'B' },
-                { text: String(Math.round(printData.total - (printData.deliveryFee || 0) + (printData.discount || 0))), align:"RIGHT", width:0.40, style: 'B' }
+                { text: "Bill Amount:", align: "RIGHT", width: 0.60, style: 'B' },
+                { text: String(Math.round(printData.total - (printData.deliveryFee || 0) + (printData.discount || 0))), align: "RIGHT", width: 0.40, style: 'B' }
             ]);
 
             if (printData.deliveryFee > 0) {
                 printer.tableCustom([
-                    { text: "Delivery Fee:", align:"RIGHT", width:0.60 },
-                    { text: String(Math.round(printData.deliveryFee)), align:"RIGHT", width:0.40 }
+                    { text: "Delivery Fee:", align: "RIGHT", width: 0.60 },
+                    { text: String(Math.round(printData.deliveryFee)), align: "RIGHT", width: 0.40 }
                 ]);
             }
 
             if (printData.discount > 0) {
                 printer.tableCustom([
-                    { text: "Discount:", align:"RIGHT", width:0.60 },
-                    { text: "-" + String(Math.round(printData.discount)), align:"RIGHT", width:0.40 }
+                    { text: "Discount:", align: "RIGHT", width: 0.60 },
+                    { text: "-" + String(Math.round(printData.discount)), align: "RIGHT", width: 0.40 }
                 ]);
             }
 
             if (printData.deliveryFee > 0 || printData.discount > 0) {
                 printer.tableCustom([
-                    { text: "NET TOTAL:", align:"RIGHT", width:0.60, style: 'B' },
-                    { text: String(Math.round(printData.total)), align:"RIGHT", width:0.40, style: 'B' }
+                    { text: "NET TOTAL:", align: "RIGHT", width: 0.60, style: 'B' },
+                    { text: String(Math.round(printData.total)), align: "RIGHT", width: 0.40, style: 'B' }
                 ]);
             }
 
@@ -385,12 +386,12 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                 const change = Math.max(0, tendered - printData.total);
                 printer.text('--------------------------------');
                 printer.tableCustom([
-                    { text: "Tendered:", align:"RIGHT", width:0.60 },
-                    { text: String(Math.round(tendered)), align:"RIGHT", width:0.40 }
+                    { text: "Tendered:", align: "RIGHT", width: 0.60 },
+                    { text: String(Math.round(tendered)), align: "RIGHT", width: 0.40 }
                 ]);
                 printer.tableCustom([
-                    { text: "Change:", align:"RIGHT", width:0.60 },
-                    { text: String(Math.round(change)), align:"RIGHT", width:0.40 }
+                    { text: "Change:", align: "RIGHT", width: 0.60 },
+                    { text: String(Math.round(change)), align: "RIGHT", width: 0.40 }
                 ]);
             }
 
@@ -406,7 +407,7 @@ ipcMain.handle('print-receipt', async (event, printData) => {
 
             const isCash = printData.paymentMethod === 'CASH' || printData.paymentMethod === 'Cash';
             // if (drawerEnabled && isCash) printer.cashdraw(2);
-            
+
             printer.cut().close();
         });
         return { success: true };
@@ -453,9 +454,9 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
                 .size(0, 0)
                 .text(' ')
                 .text(`Type: ${printData.orderType === 'DINE_IN' ? 'DINE IN' : 'TAKE AWAY'}`)
-                if (printData.tableNo) {
-                    printer.style('b').size(1, 1).text(`Table No: ${printData.tableNo}`).size(0, 0).style('b');
-                }
+            if (printData.tableNo) {
+                printer.style('b').size(1, 1).text(`Table No: ${printData.tableNo}`).size(0, 0).style('b');
+            }
             printer
                 .text(' ')
             printer
@@ -468,20 +469,20 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
             printData.items.forEach(item => {
                 const qtyLine = `${item.quantity}`;
                 // Limit item name to 26 characters to fit with qty on a double-width line
-                const itemName = (item.name || 'Item').substring(0, 13); 
-                
+                const itemName = (item.name || 'Item').substring(0, 13);
+
                 printer
                     .style('b')
                     .size(1, 1)
                     .text(`${itemName.padEnd(13, ' ')} ${qtyLine.padStart(2, ' ')}`);
-                
+
                 if (item.variantName) {
                     printer
                         .style('b')
                         .size(1, 1)
                         .text(`  (${item.variantName})`.substring(0, 16));
                 }
-                    
+
                 if (item.dealChoices) {
                     try {
                         const choices = JSON.parse(item.dealChoices);
@@ -490,7 +491,7 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
                             const variant = c.variantName ? `: ${c.variantName}` : '';
                             printer.text(`   > ${qty}${c.productName}${variant}`.substring(0, 24));
                         });
-                    } catch (e) {}
+                    } catch (e) { }
                 }
                 printer
                     .size(0, 0)
@@ -583,15 +584,15 @@ ipcMain.handle('validate-voucher', async (event, { code, branchId }) => {
         const db = getDb();
         const voucher = db.prepare("SELECT * FROM vouchers WHERE code = ? AND isActive = 1").get(code);
         if (!voucher) return { success: false, message: 'Invalid voucher code' };
-        
+
         if (new Date() > new Date(voucher.expiryDate)) {
             return { success: false, message: 'Voucher has expired' };
         }
-        
+
         if (voucher.branchId && voucher.branchId !== branchId) {
             return { success: false, message: 'Voucher not valid for this branch' };
         }
-        
+
         return { success: true, voucher };
     } catch (e) {
         return { success: false, message: e.message };
