@@ -4,12 +4,19 @@ const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 module.exports = {
   packagerConfig: {
     asar: true,
+    icon: './build/icon',
+    name: 'FoodFactoryPOS',
+    executableName: 'FoodFactoryPOS',
   },
   rebuildConfig: {},
   makers: [
     {
       name: '@electron-forge/maker-squirrel',
-      config: {},
+      config: {
+        name: 'food_factory_pos',
+        authors: 'sajeel',
+        setupIcon: './build/icon.ico',
+      },
     },
     {
       name: '@electron-forge/maker-zip',
