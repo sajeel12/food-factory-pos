@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { HashRouter, Routes, Route } from 'react-router-dom';
 import Layout from './components/Layout';
 import POS from './pages/POS';
 import Delivery from './pages/Delivery';
@@ -27,7 +27,7 @@ function AppRoutes() {
   const posRole = user.posRole;
 
   return (
-    <BrowserRouter>
+    <HashRouter>
       <Routes>
         <Route path="/" element={<Layout />}>
           {posRole === 'POS_DELIVERY' ? (
@@ -46,7 +46,7 @@ function AppRoutes() {
           )}
         </Route>
       </Routes>
-    </BrowserRouter>
+    </HashRouter>
   );
 }
 
