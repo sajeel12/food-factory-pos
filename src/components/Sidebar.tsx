@@ -26,7 +26,7 @@ export default function Sidebar() {
             className="w-24 bg-gray-900 flex-shrink-0 text-white min-h-screen border-r border-gray-800 shadow-xl z-20 flex flex-col items-center py-6"
         >
             <div className="w-14 h-14 rounded-2xl flex items-center justify-center overflow-hidden shadow-lg mb-8">
-                <img src="/logo.png" alt="Food Factory" className="w-full h-full object-contain" />
+                <img src="./logo.png" alt="Food Factory" className="w-full h-full object-contain" />
             </div>
 
             <nav className="flex-1 space-y-6 w-full px-4 text-center">
