@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
+if (require('electron-squirrel-startup')) app.quit();
 const path = require('path');
 const { initDb, getDb } = require('./db.cjs');
 const { startSyncWorker, performSync } = require('./sync.cjs');
