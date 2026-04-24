@@ -26,7 +26,7 @@ export default function Login() {
             <div className="w-full max-w-md">
                 {/* Logo */}
                 <div className="flex flex-col items-center mb-8">
-                    <img src="/logo.png" alt="Food Factory" className="h-24 w-auto mb-4" />
+                    <img src="./logo.png" alt="Food Factory" className="h-24 w-auto mb-4" />
                     <p className="text-gray-400 mt-1 text-sm">Point of Sale Terminal</p>
                 </div>
 

@@ -14,7 +14,8 @@
     "electron:start": "wait-on tcp:5173 && env -u ELECTRON_RUN_AS_NODE electron . --no-sandbox",
     "package": "electron-forge package",
     "start": "electron-forge start",
-    "make": "electron-forge make"
+    "make": "electron-forge make",
+    "build:exe": "npm run build && electron-builder --win"
   },
   "build": {
     "appId": "com.foodfactory.pos",

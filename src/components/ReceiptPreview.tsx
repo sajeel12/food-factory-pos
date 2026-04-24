@@ -51,7 +51,7 @@ export default function ReceiptPreview({ data, cartNames, onPrint, onClose }: Re
                      style={{ fontFamily: "'Courier New', Courier, monospace" }}>
                     {/* Header with Logo */}
                     <div className="text-center mb-4">
-                        <img src="/logo.png" alt="Food Factory" className="h-16 w-auto mx-auto mb-2" />
+                        <img src="./logo.png" alt="Food Factory" className="h-16 w-auto mx-auto mb-2" />
                         <p className="text-[10px] text-gray-500 font-bold italic mb-2">A taste you will remember</p>
                         <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Customer Receipt</p>
                     </div>
