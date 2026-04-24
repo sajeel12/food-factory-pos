@@ -10,7 +10,9 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "electron:start": "wait-on tcp:5173 && env -u ELECTRON_RUN_AS_NODE electron . --no-sandbox",
-    "package": "npm run build && env -u ELECTRON_RUN_AS_NODE electron-builder --win"
+    "package": "electron-forge package",
+    "start": "electron-forge start",
+    "make": "electron-forge make"
   },
   "build": {
     "appId": "com.foodfactory.pos",
@@ -34,6 +36,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.6.2",
+    "electron-squirrel-startup": "^1.0.1",
     "escpos": "^3.0.0-alpha.6",
     "escpos-network": "^3.0.0-alpha.5",
     "escpos-usb": "^3.0.0-alpha.4",
@@ -45,6 +48,14 @@
     "usb": "^2.17.0"
   },
   "devDependencies": {
+    "@electron-forge/cli": "^7.11.1",
+    "@electron-forge/maker-deb": "^7.11.1",
+    "@electron-forge/maker-rpm": "^7.11.1",
+    "@electron-forge/maker-squirrel": "^7.11.1",
+    "@electron-forge/maker-zip": "^7.11.1",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
+    "@electron-forge/plugin-fuses": "^7.11.1",
+    "@electron/fuses": "^1.8.0",
     "@eslint/js": "^9.39.1",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.7",
@@ -53,7 +64,6 @@
     "autoprefixer": "^10.4.24",
     "concurrently": "^9.2.1",
     "electron": "^40.6.1",
-    "electron-builder": "^26.8.1",
     "electron-is-dev": "^3.0.1",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
