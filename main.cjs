@@ -232,7 +232,6 @@ ipcMain.handle('print-receipt', async (event, printData) => {
         const type = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_TYPE'").get()?.value || 'NONE';
         const addr = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_ADDR'").get()?.value;
         const port = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_PORT'").get()?.value || '9100';
-        // const drawerEnabled = db.prepare("SELECT value FROM settings WHERE key = 'CASH_DRAWER_ENABLED'").get()?.value === 'false';
         const drawerEnabled = false;
 
         if (type === 'NONE') return { success: true, message: 'Printer disabled' };
@@ -257,7 +256,7 @@ ipcMain.handle('print-receipt', async (event, printData) => {
             let dateStr = dateObj.toLocaleDateString();
             let timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-            const isDelivery = !!printData.customerAddress;
+            const isDelivery = !!printData.customerAddress || printData.orderType === 'DELIVERY';
             const isDineIn = printData.orderType === 'DINE_IN';
             const orderTypeStr = isDineIn ? 'DINE IN' : (isDelivery ? 'DELIVERY' : 'TAKE AWAY');
 
@@ -403,7 +402,7 @@ ipcMain.handle('print-receipt', async (event, printData) => {
                 .text(`Bill ID: ${printData.id}`)
                 .text('Developed by Food Factory')
                 .text(' ')
-                .text(' ');
+            // .text(' ');
 
             const isCash = printData.paymentMethod === 'CASH' || printData.paymentMethod === 'Cash';
             // if (drawerEnabled && isCash) printer.cashdraw(2);
@@ -436,9 +435,20 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
                 console.error("Kitchen Printer connection error:", err);
                 return;
             }
+
+            let dateObj = new Date(printData.createdAt);
+            let dateStr = dateObj.toLocaleDateString();
+            let timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+            const isDelivery = !!printData.customerAddress || printData.orderType === 'DELIVERY';
+            const isDineIn = printData.orderType === 'DINE_IN';
+            const orderTypeStr = isDineIn ? 'DINE IN' : (isDelivery ? 'DELIVERY' : 'TAKE AWAY');
+
             printer
                 .align('ct')
                 .raw(Buffer.from([0x1C, 0x70, 0x01, 0x00])) // NV Logo
+                .text(' ')
+                .text(`Date: ${dateStr}   ${timeStr}`)
                 .text(' ')
                 .font('a')
                 .style('b')
@@ -453,7 +463,7 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
                 .text(`# ${printData.dailyOrderNumber || '-'}`)
                 .size(0, 0)
                 .text(' ')
-                .text(`Type: ${printData.orderType === 'DINE_IN' ? 'DINE IN' : 'TAKE AWAY'}`)
+                .text(orderTypeStr)
             if (printData.tableNo) {
                 printer.style('b').size(1, 1).text(`Table No: ${printData.tableNo}`).size(0, 0).style('b');
             }
@@ -541,7 +551,7 @@ ipcMain.handle('open-cash-drawer', async () => {
 ipcMain.handle('get-pending-orders', async () => {
     try {
         const db = getDb();
-        return db.prepare("SELECT * FROM orders WHERE status = 'Pending' ORDER BY createdAt DESC").all();
+        return db.prepare("SELECT * FROM orders WHERE status IN ('Pending', 'Assigned') ORDER BY createdAt DESC").all();
     } catch (e) {
         console.error("Failed to fetch pending orders:", e);
         return [];

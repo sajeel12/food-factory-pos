@@ -537,6 +537,18 @@ export default function POS() {
         }
     };
 
+    const unassignRider = async (orderId: string) => {
+        if (!ipcRenderer) return;
+        try {
+            await ipcRenderer.invoke('update-order-status', { id: orderId, status: 'Pending' });
+            setDeliveryModalOrder(null);
+            window.dispatchEvent(new Event('sync-completed'));
+        } catch (e) {
+            console.error('Failed to unassign rider', e);
+            alert('Failed to unassign rider');
+        }
+    };
+
     const markDeliveryComplete = async (orderId: string) => {
         if (!ipcRenderer) return;
         try {
@@ -1140,8 +1152,23 @@ export default function POS() {
                     <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 relative">
                         <button onClick={() => setDeliveryModalOrder(null)} className="absolute top-4 right-4 p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors outline-none"><X size={20} /></button>
                         <div className="mb-5">
-                            <p className="text-[10px] font-black uppercase tracking-widest text-blue-600">Delivery Order</p>
-                            <h2 className="text-2xl font-black text-gray-900">#{deliveryModalOrder.id}</h2>
+                            <div className="flex justify-between items-start pr-8">
+                                <div>
+                                    <p className="text-[10px] font-black uppercase tracking-widest text-blue-600">Delivery Order</p>
+                                    <h2 className="text-2xl font-black text-gray-900">#{deliveryModalOrder.id}</h2>
+                                </div>
+                                <button
+                                    onClick={async () => {
+                                        if (ipcRenderer) {
+                                            await ipcRenderer.invoke('print-receipt', { ...deliveryModalOrder, isReprint: true });
+                                        }
+                                    }}
+                                    className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg flex items-center gap-1.5 transition-colors border border-blue-100 shadow-sm"
+                                >
+                                    <Printer size={16} />
+                                    <span className="text-xs font-bold tracking-wide">Print</span>
+                                </button>
+                            </div>
                             <p className="text-sm font-semibold text-gray-600 mt-1">
                                 {deliveryModalOrder.customerName || '—'} • {deliveryModalOrder.customerPhone || '—'}
                             </p>
@@ -1149,9 +1176,19 @@ export default function POS() {
                             <p className="text-lg font-black text-gray-900 mt-3">PKR {Number(deliveryModalOrder.total).toFixed(0)}</p>
                         </div>
 
-                        {deliveryModalOrder.status === 'Pending' && (
+                        {(deliveryModalOrder.status === 'Pending' || deliveryModalOrder.status === 'Assigned') && (
                             <div>
-                                <h3 className="font-bold text-gray-700 text-xs tracking-widest uppercase mb-3">Assign Rider</h3>
+                                <div className="flex justify-between items-center mb-3">
+                                    <h3 className="font-bold text-gray-700 text-xs tracking-widest uppercase">Assign Rider</h3>
+                                    {deliveryModalOrder.status === 'Assigned' && (
+                                        <button
+                                            onClick={() => unassignRider(deliveryModalOrder.id)}
+                                            className="px-3 py-1 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-[10px] font-black uppercase tracking-wider transition-colors border border-red-100 shadow-sm"
+                                        >
+                                            Unassign
+                                        </button>
+                                    )}
+                                </div>
                                 {riders.length === 0 ? (
                                     <p className="text-sm text-gray-500 italic p-3 text-center bg-gray-50 rounded-xl">No available riders. Check admin panel or wait for sync.</p>
                                 ) : (
@@ -1166,7 +1203,7 @@ export default function POS() {
                                                     <Truck size={18} className="text-gray-400" />
                                                     <span>{r.name}</span>
                                                 </div>
-                                                <span className="text-blue-600 font-bold text-xs">ASSIGN</span>
+                                                <span className="text-blue-600 font-bold text-[10px] uppercase">{deliveryModalOrder.status === 'Assigned' ? 'REASSIGN' : 'ASSIGN'}</span>
                                             </button>
                                         ))}
                                     </div>
@@ -1269,14 +1306,21 @@ export default function POS() {
                                     <div className="flex justify-between items-start mb-2 relative z-10">
                                         <div>
                                             <p className={`text-[10px] font-black uppercase tracking-widest ${activePendingOrderId === order.id ? 'text-white/70' : 'text-gray-400'}`}>
-                                                Order #{order.id}
+                                                {order.dailyOrderNumber ? `Daily #${order.dailyOrderNumber}` : `Order #${order.id}`}
                                             </p>
                                             <h3 className={`font-black text-lg ${activePendingOrderId === order.id ? 'text-white' : 'text-gray-900'}`}>
                                                 PKR {Number(order.total).toFixed(0)}
                                             </h3>
                                         </div>
-                                        <div className={`px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-tighter ${badgeClass}`}>
-                                            {badgeText}
+                                        <div className="flex flex-col items-end gap-1">
+                                            <div className={`px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-tighter w-max ${badgeClass}`}>
+                                                {badgeText}
+                                            </div>
+                                            {order.status === 'Assigned' && (
+                                                <div className={`px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-tighter w-max ${activePendingOrderId === order.id ? 'bg-white/30 text-white' : 'bg-blue-100 text-blue-700'}`}>
+                                                    ASSIGNED
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
 
