@@ -27,8 +27,7 @@
       "dist/**/*",
       "main.cjs",
       "db.cjs",
-      "sync.cjs",
-      "node_modules/**/*"
+      "sync.cjs"
     ],
     "win": {
       "target": [
