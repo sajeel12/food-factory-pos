@@ -248,11 +248,13 @@ ipcMain.handle('print-receipt', async (event, printData) => {
 
         const printer = new escpos.Printer(device);
 
-        device.open((err) => {
-            if (err) {
-                console.error("Printer connection error:", err);
-                return;
-            }
+        await new Promise((resolve, reject) => {
+            device.open((err) => {
+                if (err) {
+                    console.error("Printer connection error:", err);
+                    return reject(err);
+                }
+                try {
             let dateObj = new Date(printData.createdAt);
             let dateStr = dateObj.toLocaleDateString();
             let timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -409,8 +411,15 @@ ipcMain.handle('print-receipt', async (event, printData) => {
             // if (drawerEnabled && isCash) printer.cashdraw(2);
 
             printer.cut().close();
-        });
-        return { success: true };
+            resolve();
+        } catch (printErr) {
+            console.error("Print execution error:", printErr);
+            try { printer.close(); } catch (e) {}
+            reject(printErr);
+        }
+    });
+});
+return { success: true };
     } catch (e) {
         console.error("Receipt Print Error:", e);
         return { success: false, error: e.message };
@@ -431,11 +440,13 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
 
         const printer = new escpos.Printer(device);
 
-        device.open((err) => {
-            if (err) {
-                console.error("Kitchen Printer connection error:", err);
-                return;
-            }
+        await new Promise((resolve, reject) => {
+            device.open((err) => {
+                if (err) {
+                    console.error("Kitchen Printer connection error:", err);
+                    return reject(err);
+                }
+                try {
 
             let dateObj = new Date(printData.createdAt);
             let dateStr = dateObj.toLocaleDateString();
@@ -516,8 +527,15 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
                 .text(' ')
                 .cut()
                 .close();
+                resolve();
+            } catch (printErr) {
+                console.error("Kitchen Print execution error:", printErr);
+                try { printer.close(); } catch (e) {}
+                reject(printErr);
+            }
         });
-        return { success: true };
+    });
+    return { success: true };
     } catch (e) {
         console.error("Kitchen Print Error:", e);
         return { success: false, error: e.message };
