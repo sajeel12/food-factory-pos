@@ -3,7 +3,7 @@
   "description": "point of sale for mamu saeed",
   "author": "Sajeel Ahmed",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "main": "main.cjs",
   "scripts": {
