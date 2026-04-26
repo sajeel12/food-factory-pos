@@ -265,11 +265,14 @@ ipcMain.handle('print-receipt', async (event, printData) => {
 
             let detailStr = '';
             if (isDineIn) {
-                detailStr = `Table No: ${printData.tableNo || '-'}`;
+                detailStr = `Table No: ${printData.tableNo || '-'} - ${printData.customerName || 'Walk-in'}`;
             } else if (isDelivery) {
-                detailStr = `Detail: ${printData.customerName || 'Customer'} - ${printData.customerPhone || ''}`;
+                detailStr = `Customer: ${printData.customerName || ''}\nPhone: ${printData.customerPhone || ''}`;
+                if (printData.customerAddress) {
+                    detailStr += `\nAddress: ${printData.customerAddress}`;
+                }
             } else {
-                detailStr = `Detail: Take Away - ${printData.customerName || 'Cash'}`;
+                detailStr = `Take Away: ${printData.customerName || 'Walk-in'}`;
             }
 
             let sessionUser = null;
