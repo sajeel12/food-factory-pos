@@ -8,9 +8,20 @@ interface Order {
     id: string;
     total: number;
     paymentMethod: string;
+    tenderedAmount: number;
     status: string;
     synced: number;
     createdAt: string;
+    customerName?: string;
+    customerPhone?: string;
+    customerAddress?: string;
+    deliveryFee?: number;
+    orderType?: string;
+    tableNo?: string;
+    dailyOrderNumber?: number;
+    cashierName?: string;
+    discount?: number;
+    voucherId?: string;
 }
 
 export default function OrderHistory() {
@@ -64,9 +75,18 @@ export default function OrderHistory() {
                 id: order.id,
                 total: order.total,
                 paymentMethod: order.paymentMethod,
-                tenderedAmount: order.total,
+                tenderedAmount: order.tenderedAmount || order.total,
                 status: order.status,
                 createdAt: order.createdAt,
+                customerName: order.customerName || null,
+                customerPhone: order.customerPhone || null,
+                customerAddress: order.customerAddress || null,
+                deliveryFee: order.deliveryFee || 0,
+                orderType: order.orderType || 'TAKE_AWAY',
+                tableNo: order.tableNo || null,
+                dailyOrderNumber: order.dailyOrderNumber || 0,
+                cashierName: order.cashierName || null,
+                discount: order.discount || 0,
                 items: items || []
             });
         } catch (err) {

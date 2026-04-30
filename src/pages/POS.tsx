@@ -211,11 +211,11 @@ export default function POS() {
 
     const handleDealChoicesComplete = (product: Product, choices: any[]) => {
         const allDealChoices = product.dealItems?.map(di => {
-             const choice = choices.find(c => c.productId === di.productId);
-             if (choice) return { productName: choice.productName, variantName: choice.variantName, quantity: di.quantity };
-             const subP = products.find(p => p.id === di.productId);
-             const subVariant = subP?.variants?.find(v => v.id === di.variantId);
-             return { productName: subP?.name || di.name, variantName: subVariant?.name || '', quantity: di.quantity };
+            const choice = choices.find(c => c.productId === di.productId);
+            if (choice) return { productName: choice.productName, variantName: choice.variantName, quantity: di.quantity };
+            const subP = products.find(p => p.id === di.productId);
+            const subVariant = subP?.variants?.find(v => v.id === di.variantId);
+            return { productName: subP?.name || di.name, variantName: subVariant?.name || '', quantity: di.quantity };
         }) || [];
 
         setCart(prev => {
@@ -235,22 +235,22 @@ export default function POS() {
     const addToCartAction = (product: Product, variant?: { id: string; name: string; price: number }) => {
         let finalDealChoices = undefined;
         if (product.isDeal && product.dealItems) {
-             finalDealChoices = product.dealItems.map(di => {
-                 const subP = products.find(p => p.id === di.productId);
-                 const subVariant = subP?.variants?.find(v => v.id === di.variantId);
-                 return { productName: subP?.name || di.name, variantName: subVariant?.name || '', quantity: di.quantity };
-             });
+            finalDealChoices = product.dealItems.map(di => {
+                const subP = products.find(p => p.id === di.productId);
+                const subVariant = subP?.variants?.find(v => v.id === di.variantId);
+                return { productName: subP?.name || di.name, variantName: subVariant?.name || '', quantity: di.quantity };
+            });
         }
-        
+
         setCart(prev => {
             const uniqueId = variant ? `${product.id}-${variant.id}` : product.id;
             const exists = prev.find(item => item.uniqueId === uniqueId);
             if (exists) return prev.map(item => item.uniqueId === uniqueId ? { ...item, qty: item.qty + 1 } : item);
-            return [...prev, { 
-                uniqueId, 
-                id: product.id, 
-                name: product.name, 
-                price: variant ? variant.price : product.price, 
+            return [...prev, {
+                uniqueId,
+                id: product.id,
+                name: product.name,
+                price: variant ? variant.price : product.price,
                 qty: 1,
                 variantId: variant?.id,
                 variantName: variant?.name,
@@ -297,7 +297,7 @@ export default function POS() {
 
     const subtotal = cart.reduce((sum, item) => sum + (Number(item.price) * Number(item.qty)), 0);
     const deliveryFee = ((checkoutMode === 'Delivery' || !!deliveryInfo.address) && !waiveDeliveryFee) ? configDeliveryFee : 0;
-    
+
     let discount = 0;
     if (appliedVoucher) {
         if (appliedVoucher.type === 'PERCENTAGE') {
@@ -307,7 +307,7 @@ export default function POS() {
         }
     }
 
-    const tax = 0; 
+    const tax = 0;
     const total = Math.max(0, subtotal + tax + deliveryFee - discount);
 
     const handleCheckout = async (paymentMethod: 'Cash' | 'Card' | 'Delivery') => {
@@ -350,8 +350,8 @@ export default function POS() {
                         subtotal: item.price * item.qty,
                         dealChoices: item.dealChoices ? JSON.stringify(item.dealChoices) : null
                     })),
-                    orderType: orderType,
-                    tableNo: orderType === 'DINE_IN' ? tableNo : null
+                    orderType: paymentMethod === 'Delivery' ? 'DELIVERY' : orderType,
+                    tableNo: paymentMethod === 'Delivery' ? null : (orderType === 'DINE_IN' ? tableNo : null)
                 };
 
                 const orderResult = await ipcRenderer.invoke('create-order', payload);
@@ -463,7 +463,7 @@ export default function POS() {
                 };
 
                 let kitchenPayload = null;
-                
+
                 if (activePendingOrderId) {
                     const newItems = [];
                     for (const item of cart) {
@@ -474,7 +474,7 @@ export default function POS() {
                             newItems.push({ ...item, qty: item.qty - orig.qty });
                         }
                     }
-                    
+
                     if (newItems.length > 0) {
                         kitchenPayload = {
                             ...payload,
@@ -501,7 +501,7 @@ export default function POS() {
                     (payload as any).dailyOrderNumber = orderResult.dailyOrderNumber;
                     if (kitchenPayload) (kitchenPayload as any).dailyOrderNumber = orderResult.dailyOrderNumber;
                 }
-                
+
                 if (kitchenPayload) {
                     await ipcRenderer.invoke('print-kitchen', kitchenPayload);
                 }
@@ -748,7 +748,7 @@ export default function POS() {
                                     </p>
                                 </div>
                             </div>
-                            <button 
+                            <button
                                 onClick={removeVoucher}
                                 className="p-1.5 hover:bg-blue-200 text-blue-600 rounded-full transition-colors"
                             >
@@ -768,7 +768,7 @@ export default function POS() {
                                     className="w-full pl-9 pr-3 py-2 bg-white border border-gray-200 rounded-xl text-xs font-bold uppercase tracking-widest outline-none focus:border-blue-500 transition-colors"
                                 />
                             </div>
-                            <button 
+                            <button
                                 onClick={handleApplyCoupon}
                                 disabled={!couponCode}
                                 className="px-4 py-2 bg-gray-900 text-white rounded-xl text-xs font-bold hover:bg-blue-600 transition-colors disabled:opacity-30 disabled:hover:bg-gray-900"
@@ -904,11 +904,10 @@ export default function POS() {
                                 <button
                                     onClick={handleHoldOrder}
                                     disabled={cart.length === 0 || isProcessing}
-                                    className={`flex flex-col items-center justify-center py-4 rounded-2xl font-bold transition-colors ${
-                                        activePendingOrderId 
-                                        ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-md' 
-                                        : 'bg-amber-50 text-amber-700 hover:bg-amber-100'
-                                    }`}
+                                    className={`flex flex-col items-center justify-center py-4 rounded-2xl font-bold transition-colors ${activePendingOrderId
+                                            ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-md'
+                                            : 'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                                        }`}
                                 >
                                     <Clock size={20} className="mb-1" />
                                     <span className="text-xs font-black tracking-tighter">
@@ -926,7 +925,7 @@ export default function POS() {
                             <span className="text-xs font-black tracking-tighter">{isDeliveryRole ? 'CHECKOUT' : 'CARD'}</span>
                         </button>
                     </div>
-                    
+
                     {!isDeliveryRole && (
                         <button
                             onClick={() => setCheckoutMode('Delivery')}
@@ -1046,16 +1045,16 @@ export default function POS() {
                                     className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:border-blue-500 h-24 resize-none"
                                 />
                             </div>
-                             <div className="pt-4 space-y-3">
+                            <div className="pt-4 space-y-3">
                                 <p className="text-center font-bold text-gray-500 tracking-wide uppercase text-xs">Total: PKR {total.toFixed(0)}</p>
-                                
+
                                 {configDeliveryFee > 0 && (
                                     <div className="flex items-center justify-between bg-gray-50 p-3 rounded-xl border border-gray-100">
                                         <div className="flex items-center space-x-2">
                                             <Truck size={16} className="text-amber-600" />
                                             <span className="text-sm font-bold text-gray-700">Delivery Fee (PKR {configDeliveryFee})</span>
                                         </div>
-                                        <button 
+                                        <button
                                             onClick={() => setWaiveDeliveryFee(!waiveDeliveryFee)}
                                             className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${waiveDeliveryFee ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}
                                         >
@@ -1081,7 +1080,7 @@ export default function POS() {
             {selectedProductForVariant && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
                     <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 relative">
-                        <button onClick={() => setSelectedProductForVariant(null)} className="absolute top-4 right-4 p-2 bg-transparent text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors outline-none"><X size={20}/></button>
+                        <button onClick={() => setSelectedProductForVariant(null)} className="absolute top-4 right-4 p-2 bg-transparent text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors outline-none"><X size={20} /></button>
                         <div className="text-center mb-6">
                             <div className="text-5xl mb-4 p-4 bg-gray-50 rounded-2xl w-32 h-32 mx-auto flex items-center justify-center overflow-hidden">
                                 {selectedProductForVariant.image ? (
@@ -1113,7 +1112,7 @@ export default function POS() {
             {selectedDealForDetails && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
                     <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 relative">
-                        <button onClick={() => setSelectedDealForDetails(null)} className="absolute top-4 right-4 p-2 bg-transparent text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors outline-none"><X size={20}/></button>
+                        <button onClick={() => setSelectedDealForDetails(null)} className="absolute top-4 right-4 p-2 bg-transparent text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors outline-none"><X size={20} /></button>
                         <div className="text-center mb-6">
                             <h2 className="text-2xl font-black text-gray-900 leading-tight pr-4">{selectedDealForDetails.name}</h2>
                             <p className="text-sm font-semibold text-purple-600 mt-1 uppercase tracking-wide">Deal Contents</p>
@@ -1135,7 +1134,7 @@ export default function POS() {
                     </div>
                 </div>
             )}
-            
+
             {/* Deal Choice Modal */}
             {selectedDealForChoices && (
                 <DealChoiceModal
@@ -1254,9 +1253,9 @@ export default function POS() {
                     {pendingOrders
                         .filter(order => {
                             const term = queueSearch.toLowerCase();
-                            return (order.id || '').toLowerCase().includes(term) || 
-                                   (order.tableNo || '').toLowerCase().includes(term) ||
-                                   (order.customerName || '').toLowerCase().includes(term);
+                            return (order.id || '').toLowerCase().includes(term) ||
+                                (order.tableNo || '').toLowerCase().includes(term) ||
+                                (order.customerName || '').toLowerCase().includes(term);
                         })
                         .sort((a, b) => {
                             const parseDate = (s: string) => new Date(s && s.includes('T') ? s : (s || '').replace(' ', 'T') + 'Z');
@@ -1265,9 +1264,9 @@ export default function POS() {
                             return (b.dailyOrderNumber || 0) - (a.dailyOrderNumber || 0);
                         })
                         .map(order => {
-                            const isDelivery = !!order.customerAddress;
-                            const isDineIn = order.orderType === 'DINE_IN';
-                            
+                            const isDelivery = !!order.customerAddress || order.orderType === 'DELIVERY';
+                            const isDineIn = !isDelivery && order.orderType === 'DINE_IN';
+
                             let bgColor = 'bg-white';
                             let borderColor = 'border-gray-100';
                             let hoverBorder = 'hover:border-blue-200';
@@ -1335,7 +1334,7 @@ export default function POS() {
                                     </div>
 
                                     {isDelivery && (
-                                        <button 
+                                        <button
                                             onClick={(e) => { e.stopPropagation(); setDeliveryModalOrder(order); }}
                                             className={`absolute bottom-3 right-3 p-2 rounded-lg transition-colors shadow-sm ${activePendingOrderId === order.id ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-purple-100 text-purple-600 hover:bg-purple-200'}`}
                                             title="Manage Delivery"
@@ -1351,7 +1350,7 @@ export default function POS() {
                                 </div>
                             );
                         })}
-                    
+
                     {pendingOrders.length === 0 && (
                         <div className="h-full flex flex-col items-center justify-center text-center p-8 opacity-40">
                             <Clock size={48} className="text-gray-300 mb-4" />
@@ -1404,8 +1403,8 @@ function DealChoiceModal({ deal, allProducts, onClose, onComplete }: { deal: Pro
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 relative">
-                <button onClick={onClose} className="absolute top-4 right-4 p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"><X size={20}/></button>
-                
+                <button onClick={onClose} className="absolute top-4 right-4 p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"><X size={20} /></button>
+
                 <div className="text-center mb-6">
                     <p className="text-[10px] bg-purple-100 text-purple-700 font-black px-2 py-1 rounded-md inline-block uppercase tracking-widest mb-2">Combo Choice Required</p>
                     <h2 className="text-2xl font-black text-gray-900 leading-tight">{deal.name}</h2>
