@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Truck, Phone, MapPin, Search, CheckCircle2 } from 'lucide-react';
+import StaleOrdersNotice from '../components/StaleOrdersNotice';
 
 const ipcRenderer = typeof window !== 'undefined' && window.require ? window.require('electron').ipcRenderer : null;
 
@@ -82,6 +83,10 @@ export default function Delivery() {
                             className="bg-transparent border-none ml-2 w-full outline-none text-sm text-gray-800"
                         />
                     </div>
+                </div>
+
+                <div className="mb-4 empty:hidden">
+                    <StaleOrdersNotice kind="delivery" />
                 </div>
 
                 <div className="flex-1 overflow-y-auto pr-2 space-y-4 pb-20">

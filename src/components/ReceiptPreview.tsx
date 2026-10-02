@@ -44,7 +44,7 @@ export default function ReceiptPreview({ data, cartNames, onPrint, onClose }: Re
         : new Date().toLocaleString();
 
     return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60">
             <div className="bg-gray-100 rounded-3xl shadow-2xl w-full max-w-sm p-6 flex flex-col max-h-[90vh]">
                 {/* Receipt Paper */}
                 <div className="bg-white rounded-2xl shadow-inner border border-gray-200 px-6 py-8 flex-1 overflow-y-auto"

@@ -7,14 +7,11 @@ function initDb() {
   if (db) return db;
   const dbPath = path.join(app.getPath('userData'), 'pos-local.db');
   db = new Database(dbPath);
+  // WAL + NORMAL: no full disk flush on every write, readers don't block on the sync writer
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
 
   console.log(`Initialized local SQLite DB at: ${dbPath}`);
-
-  try {
-    db.exec(`ALTER TABLE orders ADD COLUMN dailyOrderNumber INTEGER DEFAULT 0;`);
-  } catch (e) {
-    // Column likely already exists, ignore
-  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS products (
@@ -143,6 +140,12 @@ function initDb() {
     CREATE INDEX IF NOT EXISTS idx_item_variants_productId ON item_variants(productId);
   `);
 
+  // Must run after CREATE TABLE orders, otherwise fresh installs never get this column
+  try {
+    db.exec(`ALTER TABLE orders ADD COLUMN dailyOrderNumber INTEGER DEFAULT 0;`);
+  } catch (e) {
+    // Column likely already exists, ignore
+  }
   try {
     db.exec(`ALTER TABLE orders ADD COLUMN paymentMethod TEXT DEFAULT 'CASH';`);
   } catch (e) {
@@ -216,6 +219,9 @@ function initDb() {
   try {
     db.exec(`ALTER TABLE products ADD COLUMN image TEXT;`);
   } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE products ADD COLUMN imageHash TEXT;`);
+  } catch (e) {}
 
   try {
     db.exec(`ALTER TABLE vouchers ADD COLUMN name TEXT;`);
@@ -224,6 +230,10 @@ function initDb() {
   try {
     db.exec(`ALTER TABLE order_items ADD COLUMN dealChoices TEXT;`);
   } catch (e) {}
+
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_orders_createdAt ON orders(createdAt);`);
+  // The pending/delivery queues query by status every 10s
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);`);
 
   return db;
 }

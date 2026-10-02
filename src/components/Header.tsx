@@ -1,5 +1,5 @@
 import { Wifi, Battery, Clock, Bell, Cloud, CloudOff, RefreshCw } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 
 // Safely require ipcRenderer
@@ -19,8 +19,11 @@ export default function Header({ shiftId }: { shiftId?: string }) {
     const [actualCash, setActualCash] = useState('');
     const [ending, setEnding] = useState(false);
 
+    const prevUnsynced = useRef(0);
+
     useEffect(() => {
-        const timer = setInterval(() => setTime(new Date()), 1000);
+        // Only hours:minutes are shown, so a 1s tick just re-rendered the header for nothing
+        const timer = setInterval(() => setTime(new Date()), 10000);
 
         const handleOnline = () => setSyncStatus(prev => ({ ...prev, isOnline: true }));
         const handleOffline = () => setSyncStatus(prev => ({ ...prev, isOnline: false }));
@@ -28,37 +31,57 @@ export default function Header({ shiftId }: { shiftId?: string }) {
         window.addEventListener('online', handleOnline);
         window.addEventListener('offline', handleOffline);
 
-        // Poll for healthcheck and unsynced orders
-        let syncTimer: ReturnType<typeof setInterval> | null = null;
-        if (ipcRenderer) {
-            syncTimer = setInterval(async () => {
-                try {
-                    // Check cloud connection via health ping
-                    try {
-                        const healthRes = await fetch(`${import.meta.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/api/health`, { signal: AbortSignal.timeout(2000) });
-                        setSyncStatus(prev => ({ ...prev, isOnline: healthRes.ok }));
-                    } catch {
-                        setSyncStatus(prev => ({ ...prev, isOnline: false }));
-                    }
+        let unsyncedTimer: ReturnType<typeof setInterval> | null = null;
+        let healthTimer: ReturnType<typeof setInterval> | null = null;
+        let failedPings = 0;
+        let pingInFlight = false;
 
+        if (ipcRenderer) {
+            // Unsynced count is a cheap local query
+            const pollUnsynced = async () => {
+                try {
                     const result = await ipcRenderer.invoke('get-sync-status');
-                    setSyncStatus(prev => {
-                        // If we drop from some unsynced to 0, it means a sync just happened
-                        if (prev.unsynced > 0 && result.unsynced === 0) {
-                            setIsSyncing(true);
-                            setTimeout(() => setIsSyncing(false), 2000); // UI visual indication
-                        }
-                        return { ...prev, unsynced: result.unsynced };
-                    });
+                    const unsynced = Number(result?.unsyncedOrders) || 0;
+                    // Dropping from some unsynced to 0 means a sync just went through
+                    if (prevUnsynced.current > 0 && unsynced === 0) {
+                        setIsSyncing(true);
+                        setTimeout(() => setIsSyncing(false), 2000);
+                    }
+                    prevUnsynced.current = unsynced;
+                    setSyncStatus(prev => (prev.unsynced === unsynced ? prev : { ...prev, unsynced }));
                 } catch (e) {
                     console.error('Failed to get sync status', e);
                 }
-            }, 3000); // Polling every 3s
+            };
+
+            // The cloud server can take a while to wake up, so ping less often, wait longer,
+            // and only show Offline after two failures in a row instead of flapping
+            const pingHealth = async () => {
+                if (pingInFlight) return;
+                pingInFlight = true;
+                try {
+                    const res = await fetch(`${import.meta.env.VITE_API_URL || 'https://food-factory-cloud-backend.onrender.com'}/api/health`, { signal: AbortSignal.timeout(10000) });
+                    if (!res.ok) throw new Error(`health ${res.status}`);
+                    failedPings = 0;
+                    setSyncStatus(prev => (prev.isOnline ? prev : { ...prev, isOnline: true }));
+                } catch {
+                    failedPings++;
+                    if (failedPings >= 2) setSyncStatus(prev => (prev.isOnline ? { ...prev, isOnline: false } : prev));
+                } finally {
+                    pingInFlight = false;
+                }
+            };
+
+            pollUnsynced();
+            pingHealth();
+            unsyncedTimer = setInterval(pollUnsynced, 3000);
+            healthTimer = setInterval(pingHealth, 15000);
         }
 
         return () => {
             clearInterval(timer);
-            if (syncTimer) clearInterval(syncTimer);
+            if (unsyncedTimer) clearInterval(unsyncedTimer);
+            if (healthTimer) clearInterval(healthTimer);
             window.removeEventListener('online', handleOnline);
             window.removeEventListener('offline', handleOffline);
         };
@@ -108,7 +131,9 @@ export default function Header({ shiftId }: { shiftId?: string }) {
                                 setIsSyncing(true);
                                 await ipcRenderer.invoke('force-sync');
                                 const result = await ipcRenderer.invoke('get-sync-status');
-                                setSyncStatus(prev => ({ ...prev, unsynced: result.unsynced }));
+                                const unsynced = Number(result?.unsyncedOrders) || 0;
+                                prevUnsynced.current = unsynced;
+                                setSyncStatus(prev => ({ ...prev, unsynced }));
                                 window.dispatchEvent(new Event('sync-completed'));
                                 setIsSyncing(false);
                             }
@@ -142,7 +167,9 @@ export default function Header({ shiftId }: { shiftId?: string }) {
                     onClick={() => { if (shiftId) setShowEndShiftModal(true); }}
                     className="flex items-center space-x-3 bg-blue-50 hover:bg-blue-100 cursor-pointer p-1.5 rounded-xl border border-blue-100 transition-colors"
                 >
-                    <img src="https://i.pravatar.cc/150?u=sajeel" alt="User" className="w-8 h-8 rounded-full border border-white shadow-sm" />
+                    <div className="w-8 h-8 rounded-full border border-white shadow-sm bg-blue-600 text-white flex items-center justify-center text-sm font-black uppercase">
+                        {(user?.username || 'C').trim().charAt(0) || 'C'}
+                    </div>
                     <div className="flex flex-col pr-3">
                         <span className="text-xs font-bold text-gray-900 leading-tight">{user?.username || 'Cashier'}</span>
                         <span className="text-[10px] text-gray-500 uppercase font-semibold">End Shift</span>
@@ -153,7 +180,7 @@ export default function Header({ shiftId }: { shiftId?: string }) {
 
             {/* End Shift Modal overlay */}
             {showEndShiftModal && (
-                <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-gray-900/40 backdrop-blur-sm">
+                <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-gray-900/40">
                     <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-sm">
                         <h2 className="text-2xl font-black mb-2 text-center text-gray-800">End Shift</h2>
                         <p className="text-gray-500 text-sm text-center mb-6">Enter the actual cash currently in the drawer to close your shift.</p>

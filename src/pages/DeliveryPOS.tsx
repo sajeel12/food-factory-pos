@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { Search, ShoppingBag, Plus, Minus, Trash2, Truck, X, MapPin, CheckCircle2, User, UserPlus, Ticket } from 'lucide-react';
 import ReceiptPreview from '../components/ReceiptPreview';
+import StaleOrdersNotice from '../components/StaleOrdersNotice';
 import { useAuth } from '../context/AuthContext';
 
 declare global {
@@ -56,6 +57,47 @@ interface Rider {
     id: string;
     name: string;
 }
+
+// Memoized so typing in the cart/customer inputs or the 10s queue refresh doesn't
+// re-render every menu card (each carrying a base64 image).
+const ProductGrid = memo(function ProductGrid({ products, onSelect, onShowDeal }: {
+    products: Product[];
+    onSelect: (product: Product) => void;
+    onShowDeal: (product: Product) => void;
+}) {
+    return (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
+            {products.map(product => (
+                <div
+                    key={product.id}
+                    onClick={() => onSelect(product)}
+                    className="bg-white p-3 rounded-2xl border border-gray-200 shadow-sm hover:border-blue-400 hover:shadow-md cursor-pointer flex flex-col items-center text-center group transition-all"
+                >
+                    <div className="text-4xl mb-3 p-3 bg-gray-50 rounded-2xl group-hover:bg-blue-50 w-full aspect-square flex items-center justify-center overflow-hidden transition-colors relative">
+                        {product.image ? (
+                            <img src={product.image} loading="lazy" decoding="async" className="w-full h-full object-cover" />
+                        ) : (
+                            product.img
+                        )}
+                        {product.isDeal && (
+                            <span className="absolute top-1 right-1 bg-red-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider">Deal</span>
+                        )}
+                    </div>
+                    <h3 className="font-bold text-gray-800 leading-tight mb-1 line-clamp-2">{product.name}</h3>
+                    {product.isDeal && product.dealItems && product.dealItems.length > 0 && (
+                        <button
+                            onClick={(e) => { e.stopPropagation(); onShowDeal(product); }}
+                            className="text-[10px] bg-purple-100 text-purple-700 font-bold px-2 py-1 rounded-md mt-1 mb-2 hover:bg-purple-200 transition-colors uppercase tracking-wider outline-none"
+                        >
+                            View Contents
+                        </button>
+                    )}
+                    <p className="text-blue-600 font-extrabold mt-auto pt-2">PKR {Number(product.price).toFixed(0)}</p>
+                </div>
+            ))}
+        </div>
+    );
+});
 
 export default function DeliveryPOS() {
     // POS State
@@ -183,54 +225,16 @@ export default function DeliveryPOS() {
     }, [loadProducts, fetchQueue, loadSettings]);
 
     // POS Logic
-    const filteredProducts = products.filter((p: Product) =>
-        (activeCategory === 'All' || p.category === activeCategory) &&
-        p.name.toLowerCase().includes(posSearch.toLowerCase())
-    );
+    const filteredProducts = useMemo(() => {
+        const term = posSearch.toLowerCase();
+        return products.filter((p: Product) =>
+            (activeCategory === 'All' || p.category === activeCategory) &&
+            p.name.toLowerCase().includes(term)
+        );
+    }, [products, activeCategory, posSearch]);
 
-    const handleProductClick = (product: Product) => {
-        if (product.isDeal) {
-            const itemsRequiringChoice = product.dealItems?.filter(di => {
-                const subP = products.find(p => p.id === di.productId);
-                return subP && subP.variants && subP.variants.length > 0 && !di.variantId;
-            }) || [];
-
-            if (itemsRequiringChoice.length > 0) {
-                setSelectedDealForChoices(product);
-            } else {
-                addToCartAction(product);
-            }
-        } else if (product.variants && product.variants.length > 0) {
-            setSelectedProductForVariant(product);
-        } else {
-            addToCartAction(product);
-        }
-    };
-
-    const handleDealChoicesComplete = (product: Product, choices: any[]) => {
-        const allDealChoices = product.dealItems?.map(di => {
-             const choice = choices.find(c => c.productId === di.productId);
-             if (choice) return { productName: choice.productName, variantName: choice.variantName, quantity: di.quantity };
-             const subP = products.find(p => p.id === di.productId);
-             const subVariant = subP?.variants?.find(v => v.id === di.variantId);
-             return { productName: subP?.name || di.name, variantName: subVariant?.name || '', quantity: di.quantity };
-        }) || [];
-
-        setCart(prev => {
-            const uniqueId = `${product.id}-${Date.now()}`;
-            return [...prev, {
-                uniqueId,
-                id: product.id,
-                name: product.name,
-                price: product.price,
-                qty: 1,
-                dealChoices: allDealChoices
-            }];
-        });
-        setSelectedDealForChoices(null);
-    };
-
-    const addToCartAction = (product: Product, variant?: { id: string; name: string; price: number }) => {
+    // Stable across renders (only changes when the menu reloads) so the memoized grid stays put
+    const addToCartAction = useCallback((product: Product, variant?: { id: string; name: string; price: number }) => {
         let finalDealChoices = undefined;
         if (product.isDeal && product.dealItems) {
              finalDealChoices = product.dealItems.map(di => {
@@ -256,6 +260,48 @@ export default function DeliveryPOS() {
             }];
         });
         setSelectedProductForVariant(null);
+    }, [products]);
+
+    const handleProductClick = useCallback((product: Product) => {
+        if (product.isDeal) {
+            const itemsRequiringChoice = product.dealItems?.filter(di => {
+                const subP = products.find(p => p.id === di.productId);
+                return subP && subP.variants && subP.variants.length > 0 && !di.variantId;
+            }) || [];
+
+            if (itemsRequiringChoice.length > 0) {
+                setSelectedDealForChoices(product);
+            } else {
+                addToCartAction(product);
+            }
+        } else if (product.variants && product.variants.length > 0) {
+            setSelectedProductForVariant(product);
+        } else {
+            addToCartAction(product);
+        }
+    }, [products, addToCartAction]);
+
+    const handleDealChoicesComplete = (product: Product, choices: any[]) => {
+        const allDealChoices = product.dealItems?.map(di => {
+             const choice = choices.find(c => c.productId === di.productId);
+             if (choice) return { productName: choice.productName, variantName: choice.variantName, quantity: di.quantity };
+             const subP = products.find(p => p.id === di.productId);
+             const subVariant = subP?.variants?.find(v => v.id === di.variantId);
+             return { productName: subP?.name || di.name, variantName: subVariant?.name || '', quantity: di.quantity };
+        }) || [];
+
+        setCart(prev => {
+            const uniqueId = `${product.id}-${Date.now()}`;
+            return [...prev, {
+                uniqueId,
+                id: product.id,
+                name: product.name,
+                price: product.price,
+                qty: 1,
+                dealChoices: allDealChoices
+            }];
+        });
+        setSelectedDealForChoices(null);
     };
 
     const updateQty = (uniqueId: string, delta: number) => {
@@ -309,18 +355,35 @@ export default function DeliveryPOS() {
     const tax = subtotal * 0; // matching POS.tsx behavior
     const total = Math.max(0, subtotal + tax + deliveryFee - discount);
 
-    const handlePhoneChange = async (val: string) => {
-        setDeliveryInfo({ ...deliveryInfo, phone: val });
-        if (val.length >= 3 && ipcRenderer) {
+    // Phone autofill: wait for a pause in typing, and ignore results from older keystrokes
+    // that arrive after newer ones (or after a suggestion was already picked)
+    const phoneSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const phoneSearchId = useRef(0);
+    const clearCustomerSuggestions = () => {
+        phoneSearchId.current++;
+        if (phoneSearchTimer.current) clearTimeout(phoneSearchTimer.current);
+        setCustomerSuggestions([]);
+    };
+    useEffect(() => () => {
+        if (phoneSearchTimer.current) clearTimeout(phoneSearchTimer.current);
+    }, []);
+
+    const handlePhoneChange = (val: string) => {
+        setDeliveryInfo(prev => ({ ...prev, phone: val }));
+        if (val.length < 3 || !ipcRenderer) {
+            clearCustomerSuggestions();
+            return;
+        }
+        const id = ++phoneSearchId.current;
+        if (phoneSearchTimer.current) clearTimeout(phoneSearchTimer.current);
+        phoneSearchTimer.current = setTimeout(async () => {
             try {
                 const matches = await ipcRenderer.invoke('search-customer', val);
-                setCustomerSuggestions(matches);
+                if (id === phoneSearchId.current) setCustomerSuggestions(matches);
             } catch (e) {
                 console.error(e);
             }
-        } else {
-            setCustomerSuggestions([]);
-        }
+        }, 250);
     };
 
     const handleCheckout = async () => {
@@ -379,7 +442,7 @@ export default function DeliveryPOS() {
                 // Show receipt preview instead of auto-printing
                 setReceiptData(payload);
                 setDeliveryInfo({ name: '', phone: '', address: '' });
-                setCustomerSuggestions([]);
+                clearCustomerSuggestions();
                 setDeliveryMode(false);
 
                 // INSTANT REFRESH QUEUE
@@ -464,36 +527,7 @@ export default function DeliveryPOS() {
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-4 scrollbar-hide min-h-0">
-                    <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
-                        {filteredProducts.map(product => (
-                            <div
-                                key={product.id}
-                                onClick={() => handleProductClick(product)}
-                                className="bg-white p-3 rounded-2xl border border-gray-200 shadow-sm hover:border-blue-400 hover:shadow-md cursor-pointer flex flex-col items-center text-center group transition-all"
-                            >
-                                <div className="text-4xl mb-3 p-3 bg-gray-50 rounded-2xl group-hover:bg-blue-50 w-full aspect-square flex items-center justify-center overflow-hidden transition-colors relative">
-                                    {product.image ? (
-                                        <img src={product.image} className="w-full h-full object-cover" />
-                                    ) : (
-                                        product.img
-                                    )}
-                                    {product.isDeal && (
-                                        <span className="absolute top-1 right-1 bg-red-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider">Deal</span>
-                                    )}
-                                </div>
-                                <h3 className="font-bold text-gray-800 leading-tight mb-1 line-clamp-2">{product.name}</h3>
-                                {product.isDeal && product.dealItems && product.dealItems.length > 0 && (
-                                    <button
-                                        onClick={(e) => { e.stopPropagation(); setSelectedDealForDetails(product); }}
-                                        className="text-[10px] bg-purple-100 text-purple-700 font-bold px-2 py-1 rounded-md mt-1 mb-2 hover:bg-purple-200 transition-colors uppercase tracking-wider outline-none"
-                                    >
-                                        View Contents
-                                    </button>
-                                )}
-                                <p className="text-blue-600 font-extrabold mt-auto pt-2">PKR {Number(product.price).toFixed(0)}</p>
-                            </div>
-                        ))}
-                    </div>
+                    <ProductGrid products={filteredProducts} onSelect={handleProductClick} onShowDeal={setSelectedDealForDetails} />
                 </div>
             </div>
 
@@ -687,7 +721,7 @@ export default function DeliveryPOS() {
                                                     key={c.id}
                                                     onClick={() => {
                                                         setDeliveryInfo({ name: c.name, phone: c.phone, address: c.address || '' });
-                                                        setCustomerSuggestions([]);
+                                                        clearCustomerSuggestions();
                                                     }}
                                                     className="p-2 hover:bg-blue-50 cursor-pointer border-b border-gray-100 last:border-0"
                                                 >
@@ -778,6 +812,7 @@ export default function DeliveryPOS() {
                 </div>
 
                 <div className="flex-1 overflow-hidden flex flex-col p-4 space-y-4 min-h-0">
+                    <StaleOrdersNotice kind="delivery" />
                     <div className="flex-1 overflow-y-auto pr-2 space-y-3 custom-scrollbar min-h-0">
                         {filteredOrders.length === 0 ? (
                             <div className="h-full flex flex-col items-center justify-center text-white/20 space-y-3">
@@ -895,7 +930,7 @@ export default function DeliveryPOS() {
 
             {/* Variant Modal */}
             {selectedProductForVariant && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80">
                     <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-sm p-8 relative overflow-hidden">
                         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-purple-500" />
                         <button onClick={() => setSelectedProductForVariant(null)} className="absolute top-6 right-6 p-2 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-full transition-all outline-none"><X size={20}/></button>
@@ -928,7 +963,7 @@ export default function DeliveryPOS() {
 
             {/* Deal Details Modal */}
             {selectedDealForDetails && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80">
                     <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-sm p-8 relative overflow-hidden">
                         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-purple-500" />
                         <button onClick={() => setSelectedDealForDetails(null)} className="absolute top-6 right-6 p-2 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-full transition-all outline-none"><X size={20}/></button>
@@ -1014,7 +1049,7 @@ function DealChoiceModal({ deal, allProducts, onClose, onComplete }: { deal: Pro
     };
 
     return (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/80">
             <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-sm p-8 relative overflow-hidden">
                 <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-purple-500" />
                 <button onClick={onClose} className="absolute top-6 right-6 p-2 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-full transition-all outline-none"><X size={20}/></button>

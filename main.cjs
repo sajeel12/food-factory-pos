@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 if (require('electron-squirrel-startup')) app.quit();
 const path = require('path');
 const { initDb, getDb } = require('./db.cjs');
@@ -18,6 +18,135 @@ function getPrinterDevice(type, addr, port) {
     }
     if (type === 'LAN' && addr) return new escpos.Network(addr, parseInt(port) || 9100);
     return null;
+}
+
+// ── Print queues ──
+// Jobs for the same printer go through that printer's queue, so two jobs never connect to it
+// at the same time. LAN thermal printers accept only one connection on port 9100; overlapping
+// jobs were being refused and the slip silently lost. Different printers (receipt vs kitchen)
+// have separate queues, so they print in parallel and an offline kitchen printer's retries
+// never hold up receipts.
+const PRINT_CONNECT_TIMEOUT_MS = 3000; // a reachable LAN printer answers in milliseconds
+const PRINT_TIMEOUT_MS = 8000;
+const PRINT_ATTEMPTS = 3;
+const PRINT_RETRY_DELAY_MS = 1000;
+const printQueues = new Map();
+
+const printerKey = (cfg) => `${cfg.type}|${cfg.addr || ''}|${cfg.type === 'LAN' ? cfg.port : ''}`;
+
+function readPrinterConfig(prefix) {
+    const db = getDb();
+    const get = (key) => db.prepare("SELECT value FROM settings WHERE key = ?").get(`${prefix}_PRINTER_${key}`)?.value;
+    return { type: get('TYPE') || 'NONE', addr: get('ADDR'), port: get('PORT') || '9100' };
+}
+
+// Resolves once the connection is fully closed, so the next job can connect.
+// graceful: after a successful write, let the bytes drain and wait for the printer to close;
+// after a failure there's nothing to deliver, so drop the socket at once.
+function closeDevice(device, graceful) {
+    return new Promise((resolve) => {
+        if (!device) return resolve();
+        try {
+            if (device instanceof escpos.Network) {
+                const sock = device.device;
+                if (!sock || sock.destroyed) return resolve();
+                if (!graceful || sock.connecting) {
+                    sock.destroy();
+                    return resolve();
+                }
+                // end() lets buffered bytes reach the printer; escpos-network's close() destroys outright
+                const timer = setTimeout(() => { sock.destroy(); resolve(); }, 1500);
+                sock.once('close', () => { clearTimeout(timer); resolve(); });
+                sock.end();
+            } else {
+                device.close();
+                resolve();
+            }
+        } catch (e) {
+            console.error('Printer close error:', e);
+            resolve();
+        }
+    });
+}
+
+// One connect → write → close cycle. `build` writes commands into the escpos buffer.
+function runPrintJob(cfg, build) {
+    return new Promise((resolve, reject) => {
+        let device = null;
+        let done = false;
+        const finish = (err) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            clearTimeout(connectTimer);
+            closeDevice(device, !err).then(() => (err ? reject(err) : resolve()));
+        };
+        const timer = setTimeout(() => finish(new Error('Printer did not respond (timeout)')), PRINT_TIMEOUT_MS);
+        // Fail fast when the printer is off or unreachable instead of waiting out the OS's
+        // much longer TCP connect timeout, so retries and the Retry dialog come sooner
+        const connectTimer = setTimeout(() => finish(new Error('Could not connect to printer (timeout)')), PRINT_CONNECT_TIMEOUT_MS);
+
+        try {
+            device = getPrinterDevice(cfg.type, cfg.addr, cfg.port);
+            if (!device) throw new Error('Printer is not configured');
+            device.open((err) => {
+                // escpos-network calls this again on any later socket error; ignore once finished
+                if (done) return;
+                clearTimeout(connectTimer);
+                if (err) return finish(err);
+                try {
+                    const printer = new escpos.Printer(device);
+                    build(printer);
+                    printer.flush((writeErr) => finish(writeErr || null));
+                } catch (e) {
+                    finish(e);
+                }
+            });
+        } catch (e) {
+            finish(e);
+        }
+    });
+}
+
+async function printWithRetry(label, cfg, build) {
+    let lastErr;
+    for (let attempt = 1; attempt <= PRINT_ATTEMPTS; attempt++) {
+        try {
+            await runPrintJob(cfg, build);
+            return;
+        } catch (e) {
+            lastErr = e;
+            console.error(`${label}: attempt ${attempt}/${PRINT_ATTEMPTS} failed:`, e.message);
+            if (attempt < PRINT_ATTEMPTS) await new Promise(r => setTimeout(r, PRINT_RETRY_DELAY_MS));
+        }
+    }
+    throw lastErr;
+}
+
+// Queues the job and returns immediately so checkout never waits on the printer.
+// If every attempt fails, the cashier gets a dialog with a Retry button instead of a silent loss.
+function queuePrint(label, cfg, build) {
+    const key = printerKey(cfg);
+    const job = (printQueues.get(key) || Promise.resolve()).then(() => printWithRetry(label, cfg, build));
+    const tail = job.catch(() => { });
+    printQueues.set(key, tail);
+    // Drop the entry once this printer's queue is idle
+    tail.then(() => { if (printQueues.get(key) === tail) printQueues.delete(key); });
+    job.catch(async (err) => {
+        const opts = {
+            type: 'error',
+            title: 'Printer Error',
+            message: `${label} did not print`,
+            detail: `${err.message}\n\nPrinter: ${cfg.addr || cfg.type}${cfg.type === 'LAN' ? `:${cfg.port}` : ''}\nCheck the printer is on and connected to the network, then press Retry.`,
+            buttons: ['Retry', 'Dismiss'],
+            defaultId: 0,
+            cancelId: 1,
+            noLink: true,
+        };
+        const win = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
+        const { response } = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
+        if (response === 0) queuePrint(label, cfg, build);
+    });
 }
 
 // Auto-detect connected USB printers for dropdown selection
@@ -75,7 +204,9 @@ function createWindow() {
         icon: path.join(__dirname, 'build', 'icon.ico'),
         webPreferences: {
             nodeIntegration: true,
-            contextIsolation: false
+            contextIsolation: false,
+            // A POS doesn't need it, and it runs on every keystroke in every input
+            spellcheck: false
         }
     });
 
@@ -155,8 +286,11 @@ ipcMain.handle('create-order', async (event, orderData) => {
 
             // SQLite's datetime() function adjusts the UTC createdAt to local time, 
             // then subtracts 6 hours to match our business day logic.
-            const prevOrderQuery = db.prepare("SELECT MAX(dailyOrderNumber) as maxNum FROM orders WHERE datetime(createdAt, 'localtime', '-6 hours') LIKE ?");
-            const prevOrder = prevOrderQuery.get(`${localBizDate}%`);
+            // The createdAt lower bound (2 days back) lets the index skip old orders instead of
+            // running datetime() over the whole table on every order.
+            const prevOrderQuery = db.prepare("SELECT MAX(dailyOrderNumber) as maxNum FROM orders WHERE createdAt >= ? AND datetime(createdAt, 'localtime', '-6 hours') LIKE ?");
+            const since = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString();
+            const prevOrder = prevOrderQuery.get(since, `${localBizDate}%`);
             finalDailyOrderNumber = (prevOrder && prevOrder.maxNum ? prevOrder.maxNum : 0) + 1;
         }
 
@@ -230,195 +364,174 @@ ipcMain.handle('get-order-items', async (event, orderId) => {
 ipcMain.handle('print-receipt', async (event, printData) => {
     try {
         const db = getDb();
-        const type = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_TYPE'").get()?.value || 'NONE';
-        const addr = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_ADDR'").get()?.value;
-        const port = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_PORT'").get()?.value || '9100';
+        const cfg = readPrinterConfig('RECEIPT');
         const drawerEnabled = false;
 
-        if (type === 'NONE') return { success: true, message: 'Printer disabled' };
+        if (cfg.type === 'NONE') return { success: true, message: 'Printer disabled' };
 
-        const device = getPrinterDevice(type, addr, port);
-        if (!device) throw new Error("Could not initialize printer device");
+        const label = `Receipt for order #${printData.dailyOrderNumber || printData.id || '-'}`;
+        queuePrint(label, cfg, (printer) => {
+            let dateObj = new Date(printData.createdAt);
+            let dateStr = dateObj.toLocaleDateString();
+            let timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-        let sessionUser = null;
-        try {
-            const userStr = db.prepare("SELECT value FROM settings WHERE key = 'POS_SESSION_USER'").get()?.value;
-            if (userStr) sessionUser = JSON.parse(userStr);
-        } catch (e) { }
+            const isDelivery = !!printData.customerAddress || printData.orderType === 'DELIVERY';
+            const isDineIn = printData.orderType === 'DINE_IN';
+            const orderTypeStr = isDineIn ? 'DINE IN' : (isDelivery ? 'DELIVERY' : 'TAKE AWAY');
 
-        const printer = new escpos.Printer(device);
-
-        device.open((err) => {
-            if (err) {
-                console.error("Printer connection error:", err);
-                return;
+            let detailStr = '';
+            if (isDineIn) {
+                detailStr = `Table No: ${printData.tableNo || '-'} - ${printData.customerName || 'Walk-in'}`;
+            } else if (isDelivery) {
+                detailStr = `Customer: ${printData.customerName || ''}\nPhone: ${printData.customerPhone || ''}`;
+                if (printData.customerAddress) {
+                    detailStr += `\nAddress: ${printData.customerAddress}`;
+                }
+            } else {
+                detailStr = `Take Away: ${printData.customerName || 'Walk-in'}`;
             }
+
+            let sessionUser = null;
             try {
-                let dateObj = new Date(printData.createdAt);
-                let dateStr = dateObj.toLocaleDateString();
-                let timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                const userStr = db.prepare("SELECT value FROM settings WHERE key = 'POS_SESSION_USER'").get()?.value;
+                if (userStr) sessionUser = JSON.parse(userStr);
+            } catch (e) { }
 
-                const isDelivery = !!printData.customerAddress || printData.orderType === 'DELIVERY';
-                const isDineIn = printData.orderType === 'DINE_IN';
-                const orderTypeStr = isDineIn ? 'DINE IN' : (isDelivery ? 'DELIVERY' : 'TAKE AWAY');
+            const rawAddress = printData.branchAddress || sessionUser?.branchAddress || '30 FOOT BAZAR, Near masjid Aqsa. St# 24. Shaheen Abad Gujranwala';
+            const rawCashier = printData.cashierName || sessionUser?.username || 'FOOD FACTORY';
 
-                let detailStr = '';
-                if (isDineIn) {
-                    detailStr = `Table No: ${printData.tableNo || '-'} - ${printData.customerName || 'Walk-in'}`;
-                } else if (isDelivery) {
-                    detailStr = `Customer: ${printData.customerName || ''}\nPhone: ${printData.customerPhone || ''}`;
-                    if (printData.customerAddress) {
-                        detailStr += `\nAddress: ${printData.customerAddress}`;
-                    }
-                } else {
-                    detailStr = `Take Away: ${printData.customerName || 'Walk-in'}`;
-                }
+            const addressLine1 = rawAddress.substring(0, 48);
+            const addressLine2 = rawAddress.length > 48 ? rawAddress.substring(48, 96) : '';
 
-                let sessionUser = null;
-                try {
-                    const userStr = db.prepare("SELECT value FROM settings WHERE key = 'POS_SESSION_USER'").get()?.value;
-                    if (userStr) sessionUser = JSON.parse(userStr);
-                } catch (e) { }
+            printer
+                .align('ct')
+                .raw(Buffer.from([0x1C, 0x70, 0x01, 0x00])) // NV Logo (Index 1)
+                .text(' ') // Single flushing space
+                .style('b')
+                .size(0, 1)
+                .text('A taste you will remember')
+                .size(0, 0)
+                .style('normal')
+                .text(' ')
+                .font('a')
+                .text(addressLine1);
 
-                const rawAddress = printData.branchAddress || sessionUser?.branchAddress || '30 FOOT BAZAR, Near masjid Aqsa. St# 24. Shaheen Abad Gujranwala';
-                const rawCashier = printData.cashierName || sessionUser?.username || 'FOOD FACTORY';
+            if (addressLine2) printer.text(addressLine2);
 
-                const addressLine1 = rawAddress.substring(0, 48);
-                const addressLine2 = rawAddress.length > 48 ? rawAddress.substring(48, 96) : '';
+            printer
+                .text(' ')
+                .style('b')
+                .text(orderTypeStr)
+                .style('normal')
+                .text('--------------------------------')
+                .text(detailStr)
+                .text('--------------------------------')
+                .align('lt')
+                .text(`Date: ${dateStr}  ${timeStr}`)
+                .text(' ')
+                .align('ct')
+                .style('b')
+                .size(1, 1)
+                .text(`Order No: ${printData.dailyOrderNumber || '-'}`)
+                .size(0, 0)
+                .style('normal')
+                .text(' ')
+                .align('lt')
+                .text(`Cashier: ${rawCashier.substring(0, 16).toUpperCase()}`)
+                .text('--------------------------------');
 
-                printer
-                    .align('ct')
-                    .raw(Buffer.from([0x1C, 0x70, 0x01, 0x00])) // NV Logo (Index 1)
-                    .text(' ') // Single flushing space
-                    .style('b')
-                    .size(0, 1)
-                    .text('A taste you will remember')
-                    .size(0, 0)
-                    .style('normal')
-                    .text(' ')
-                    .font('a')
-                    .text(addressLine1);
+            printer.tableCustom([
+                { text: "Deal", align: "LEFT", width: 0.40 },
+                { text: "Qty", align: "CENTER", width: 0.15 },
+                { text: "Price", align: "RIGHT", width: 0.20 },
+                { text: "Total", align: "RIGHT", width: 0.25 }
+            ]);
+            printer.text('--------------------------------');
 
-                if (addressLine2) printer.text(addressLine2);
-
-                printer
-                    .text(' ')
-                    .style('b')
-                    .text(orderTypeStr)
-                    .style('normal')
-                    .text('--------------------------------')
-                    .text(detailStr)
-                    .text('--------------------------------')
-                    .align('lt')
-                    .text(`Date: ${dateStr}  ${timeStr}`)
-                    .text(' ')
-                    .align('ct')
-                    .style('b')
-                    .size(1, 1)
-                    .text(`Order No: ${printData.dailyOrderNumber || '-'}`)
-                    .size(0, 0)
-                    .style('normal')
-                    .text(' ')
-                    .align('lt')
-                    .text(`Cashier: ${rawCashier.substring(0, 16).toUpperCase()}`)
-                    .text('--------------------------------');
+            printData.items.forEach(item => {
+                const name = (item.name || 'Item').substring(0, 16);
+                const pricePerItem = item.quantity > 0 ? (item.subtotal / item.quantity) : 0;
 
                 printer.tableCustom([
-                    { text: "Deal", align: "LEFT", width: 0.40 },
-                    { text: "Qty", align: "CENTER", width: 0.15 },
-                    { text: "Price", align: "RIGHT", width: 0.20 },
-                    { text: "Total", align: "RIGHT", width: 0.25 }
+                    { text: name, align: "LEFT", width: 0.40 },
+                    { text: String(item.quantity), align: "CENTER", width: 0.15 },
+                    { text: String(Math.round(pricePerItem)), align: "RIGHT", width: 0.20 },
+                    { text: String(Math.round(item.subtotal)), align: "RIGHT", width: 0.25 }
                 ]);
-                printer.text('--------------------------------');
 
-                printData.items.forEach(item => {
-                    const name = (item.name || 'Item').substring(0, 16);
-                    const pricePerItem = item.quantity > 0 ? (item.subtotal / item.quantity) : 0;
+                if (item.variantName) {
+                    printer.text(` (${item.variantName})`);
+                }
 
-                    printer.tableCustom([
-                        { text: name, align: "LEFT", width: 0.40 },
-                        { text: String(item.quantity), align: "CENTER", width: 0.15 },
-                        { text: String(Math.round(pricePerItem)), align: "RIGHT", width: 0.20 },
-                        { text: String(Math.round(item.subtotal)), align: "RIGHT", width: 0.25 }
-                    ]);
+                if (item.dealChoices) {
+                    try {
+                        const choices = JSON.parse(item.dealChoices);
+                        choices.forEach(c => {
+                            const variant = c.variantName ? `: ${c.variantName}` : '';
+                            printer.text(`  > ${c.productName}${variant}`.substring(0, 24));
+                        });
+                    } catch (e) { }
+                }
+            });
 
-                    if (item.variantName) {
-                        printer.text(` (${item.variantName})`);
-                    }
+            printer.text('--------------------------------');
 
-                    if (item.dealChoices) {
-                        try {
-                            const choices = JSON.parse(item.dealChoices);
-                            choices.forEach(c => {
-                                const variant = c.variantName ? `: ${c.variantName}` : '';
-                                printer.text(`  > ${c.productName}${variant}`.substring(0, 24));
-                            });
-                        } catch (e) { }
-                    }
-                });
+            printer.tableCustom([
+                { text: "Bill Amount:", align: "RIGHT", width: 0.60, style: 'B' },
+                { text: String(Math.round(printData.total - (printData.deliveryFee || 0) + (printData.discount || 0))), align: "RIGHT", width: 0.40, style: 'B' }
+            ]);
 
-                printer.text('--------------------------------');
-
+            if (printData.deliveryFee > 0) {
                 printer.tableCustom([
-                    { text: "Bill Amount:", align: "RIGHT", width: 0.60, style: 'B' },
-                    { text: String(Math.round(printData.total - (printData.deliveryFee || 0) + (printData.discount || 0))), align: "RIGHT", width: 0.40, style: 'B' }
+                    { text: "Delivery Fee:", align: "RIGHT", width: 0.60 },
+                    { text: String(Math.round(printData.deliveryFee)), align: "RIGHT", width: 0.40 }
                 ]);
-
-                if (printData.deliveryFee > 0) {
-                    printer.tableCustom([
-                        { text: "Delivery Fee:", align: "RIGHT", width: 0.60 },
-                        { text: String(Math.round(printData.deliveryFee)), align: "RIGHT", width: 0.40 }
-                    ]);
-                }
-
-                if (printData.discount > 0) {
-                    printer.tableCustom([
-                        { text: "Discount:", align: "RIGHT", width: 0.60 },
-                        { text: "-" + String(Math.round(printData.discount)), align: "RIGHT", width: 0.40 }
-                    ]);
-                }
-
-                if (printData.deliveryFee > 0 || printData.discount > 0) {
-                    printer.tableCustom([
-                        { text: "NET TOTAL:", align: "RIGHT", width: 0.60, style: 'B' },
-                        { text: String(Math.round(printData.total)), align: "RIGHT", width: 0.40, style: 'B' }
-                    ]);
-                }
-
-                if (printData.paymentMethod === 'CASH' || printData.paymentMethod === 'Cash') {
-                    const tendered = printData.tenderedAmount !== undefined ? printData.tenderedAmount : printData.total;
-                    const change = Math.max(0, tendered - printData.total);
-                    printer.text('--------------------------------');
-                    printer.tableCustom([
-                        { text: "Tendered:", align: "RIGHT", width: 0.60 },
-                        { text: String(Math.round(tendered)), align: "RIGHT", width: 0.40 }
-                    ]);
-                    printer.tableCustom([
-                        { text: "Change:", align: "RIGHT", width: 0.60 },
-                        { text: String(Math.round(change)), align: "RIGHT", width: 0.40 }
-                    ]);
-                }
-
-                printer
-                    .text(' ')
-                    .align('ct')
-                    .style('normal')
-                    .text(`Printed On: ${dateStr} ${timeStr}`)
-                    .text(`Bill ID: ${printData.id}`)
-                    .text('Developed by Food Factory')
-                    .text(' ')
-                // .text(' ');
-
-                const isCash = printData.paymentMethod === 'CASH' || printData.paymentMethod === 'Cash';
-                // if (drawerEnabled && isCash) printer.cashdraw(2);
-
-                printer.cut().close();
-            } catch (printErr) {
-                console.error("Print execution error:", printErr);
-                try { printer.close(); } catch (e) { }
             }
+
+            if (printData.discount > 0) {
+                printer.tableCustom([
+                    { text: "Discount:", align: "RIGHT", width: 0.60 },
+                    { text: "-" + String(Math.round(printData.discount)), align: "RIGHT", width: 0.40 }
+                ]);
+            }
+
+            if (printData.deliveryFee > 0 || printData.discount > 0) {
+                printer.tableCustom([
+                    { text: "NET TOTAL:", align: "RIGHT", width: 0.60, style: 'B' },
+                    { text: String(Math.round(printData.total)), align: "RIGHT", width: 0.40, style: 'B' }
+                ]);
+            }
+
+            if (printData.paymentMethod === 'CASH' || printData.paymentMethod === 'Cash') {
+                const tendered = printData.tenderedAmount !== undefined ? printData.tenderedAmount : printData.total;
+                const change = Math.max(0, tendered - printData.total);
+                printer.text('--------------------------------');
+                printer.tableCustom([
+                    { text: "Tendered:", align: "RIGHT", width: 0.60 },
+                    { text: String(Math.round(tendered)), align: "RIGHT", width: 0.40 }
+                ]);
+                printer.tableCustom([
+                    { text: "Change:", align: "RIGHT", width: 0.60 },
+                    { text: String(Math.round(change)), align: "RIGHT", width: 0.40 }
+                ]);
+            }
+
+            printer
+                .text(' ')
+                .align('ct')
+                .style('normal')
+                .text(`Printed On: ${dateStr} ${timeStr}`)
+                .text(`Bill ID: ${printData.id}`)
+                .text('Developed by Food Factory')
+                .text(' ')
+            // .text(' ');
+
+            const isCash = printData.paymentMethod === 'CASH' || printData.paymentMethod === 'Cash';
+            // if (drawerEnabled && isCash) printer.cashdraw(2);
+
+            printer.cut();
         });
-        return { success: true };
+        return { success: true, queued: true };
     } catch (e) {
         console.error("Receipt Print Error:", e);
         return { success: false, error: e.message };
@@ -428,109 +541,93 @@ ipcMain.handle('print-receipt', async (event, printData) => {
 ipcMain.handle('print-kitchen', async (event, printData) => {
     try {
         const db = getDb();
-        const type = db.prepare("SELECT value FROM settings WHERE key = 'KITCHEN_PRINTER_TYPE'").get()?.value || 'NONE';
-        const addr = db.prepare("SELECT value FROM settings WHERE key = 'KITCHEN_PRINTER_ADDR'").get()?.value;
-        const port = db.prepare("SELECT value FROM settings WHERE key = 'KITCHEN_PRINTER_PORT'").get()?.value || '9100';
+        const cfg = readPrinterConfig('KITCHEN');
 
-        if (type === 'NONE') return { success: true, message: 'Kitchen printer disabled' };
+        if (cfg.type === 'NONE') return { success: true, message: 'Kitchen printer disabled' };
 
-        const device = getPrinterDevice(type, addr, port);
-        if (!device) throw new Error("Could not initialize kitchen printer device");
+        const label = `${printData.isUpdate ? 'Kitchen update' : 'Kitchen slip'} for order #${printData.dailyOrderNumber || printData.id || '-'}`;
+        queuePrint(label, cfg, (printer) => {
 
-        const printer = new escpos.Printer(device);
+            let dateObj = new Date(printData.createdAt);
+            let dateStr = dateObj.toLocaleDateString();
+            let timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-        device.open((err) => {
-            if (err) {
-                console.error("Kitchen Printer connection error:", err);
-                return;
+            const isDelivery = !!printData.customerAddress || printData.orderType === 'DELIVERY';
+            const isDineIn = printData.orderType === 'DINE_IN';
+            const orderTypeStr = isDineIn ? 'DINE IN' : (isDelivery ? 'DELIVERY' : 'TAKE AWAY');
+
+            printer
+                .align('ct')
+                .raw(Buffer.from([0x1C, 0x70, 0x01, 0x00])) // NV Logo
+                .text(' ')
+                .text(`Date: ${dateStr}   ${timeStr}`)
+                .text(' ')
+                .font('a')
+                .style('b')
+                .size(2, 2)
+                .text(printData.isUpdate ? 'UPDATE TICKET' : 'KITCHEN SLIP')
+                .size(0, 0)
+                .text('--------------------------------')
+                .text(' ')
+                .align('ct')
+                .style('b')
+                .size(2, 2)
+                .text(`# ${printData.dailyOrderNumber || '-'}`)
+                .size(0, 0)
+                .text(' ')
+                .text(orderTypeStr)
+            if (printData.tableNo) {
+                printer.style('b').size(1, 1).text(`Table No: ${printData.tableNo}`).size(0, 0).style('b');
             }
-            try {
+            printer
+                .text(' ')
+            printer
+                .align('lt')
+                .style('b')
+                .size(1, 1)
+                .text('Item         Qty')
+                .text('----------------');
 
-                let dateObj = new Date(printData.createdAt);
-                let dateStr = dateObj.toLocaleDateString();
-                let timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-                const isDelivery = !!printData.customerAddress || printData.orderType === 'DELIVERY';
-                const isDineIn = printData.orderType === 'DINE_IN';
-                const orderTypeStr = isDineIn ? 'DINE IN' : (isDelivery ? 'DELIVERY' : 'TAKE AWAY');
+            printData.items.forEach(item => {
+                const qtyLine = `${item.quantity}`;
+                // Limit item name to 26 characters to fit with qty on a double-width line
+                const itemName = (item.name || 'Item').substring(0, 13);
 
                 printer
-                    .align('ct')
-                    .raw(Buffer.from([0x1C, 0x70, 0x01, 0x00])) // NV Logo
-                    .text(' ')
-                    .text(`Date: ${dateStr}   ${timeStr}`)
-                    .text(' ')
-                    .font('a')
-                    .style('b')
-                    .size(2, 2)
-                    .text(printData.isUpdate ? 'UPDATE TICKET' : 'KITCHEN SLIP')
-                    .size(0, 0)
-                    .text('--------------------------------')
-                    .text(' ')
-                    .align('ct')
-                    .style('b')
-                    .size(2, 2)
-                    .text(`# ${printData.dailyOrderNumber || '-'}`)
-                    .size(0, 0)
-                    .text(' ')
-                    .text(orderTypeStr)
-                if (printData.tableNo) {
-                    printer.style('b').size(1, 1).text(`Table No: ${printData.tableNo}`).size(0, 0).style('b');
-                }
-                printer
-                    .text(' ')
-                printer
-                    .align('lt')
                     .style('b')
                     .size(1, 1)
-                    .text('Item         Qty')
-                    .text('----------------');
+                    .text(`${itemName.padEnd(13, ' ')} ${qtyLine.padStart(2, ' ')}`);
 
-                printData.items.forEach(item => {
-                    const qtyLine = `${item.quantity}`;
-                    // Limit item name to 26 characters to fit with qty on a double-width line
-                    const itemName = (item.name || 'Item').substring(0, 13);
-
+                if (item.variantName) {
                     printer
                         .style('b')
                         .size(1, 1)
-                        .text(`${itemName.padEnd(13, ' ')} ${qtyLine.padStart(2, ' ')}`);
+                        .text(`  (${item.variantName})`.substring(0, 16));
+                }
 
-                    if (item.variantName) {
-                        printer
-                            .style('b')
-                            .size(1, 1)
-                            .text(`  (${item.variantName})`.substring(0, 16));
-                    }
-
-                    if (item.dealChoices) {
-                        try {
-                            const choices = JSON.parse(item.dealChoices);
-                            choices.forEach(c => {
-                                const qty = c.quantity ? `${c.quantity}x ` : '';
-                                const variant = c.variantName ? `: ${c.variantName}` : '';
-                                printer.text(`   > ${qty}${c.productName}${variant}`.substring(0, 24));
-                            });
-                        } catch (e) { }
-                    }
-                    printer
-                        .size(0, 0)
-                        .text('--------------------------------');
-                });
-
+                if (item.dealChoices) {
+                    try {
+                        const choices = JSON.parse(item.dealChoices);
+                        choices.forEach(c => {
+                            const qty = c.quantity ? `${c.quantity}x ` : '';
+                            const variant = c.variantName ? `: ${c.variantName}` : '';
+                            printer.text(`   > ${qty}${c.productName}${variant}`.substring(0, 24));
+                        });
+                    } catch (e) { }
+                }
                 printer
-                    .text(' ')
-                    .text(' ')
-                    .text(' ')
-                    .text(' ')
-                    .cut()
-                    .close();
-            } catch (printErr) {
-                console.error("Kitchen Print execution error:", printErr);
-                try { printer.close(); } catch (e) { }
-            }
+                    .size(0, 0)
+                    .text('--------------------------------');
+            });
+
+            printer
+                .text(' ')
+                .text(' ')
+                .text(' ')
+                .text(' ')
+                .cut();
         });
-        return { success: true };
+        return { success: true, queued: true };
     } catch (e) {
         console.error("Kitchen Print Error:", e);
         return { success: false, error: e.message };
@@ -539,33 +636,33 @@ ipcMain.handle('print-kitchen', async (event, printData) => {
 
 ipcMain.handle('open-cash-drawer', async () => {
     try {
-        const db = getDb();
-        const type = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_TYPE'").get()?.value || 'NONE';
-        const addr = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_ADDR'").get()?.value;
-        const port = db.prepare("SELECT value FROM settings WHERE key = 'RECEIPT_PRINTER_PORT'").get()?.value || '9100';
+        const cfg = readPrinterConfig('RECEIPT');
 
-        if (type === 'NONE') return { success: true, message: 'Printer disabled, cannot open drawer' };
+        if (cfg.type === 'NONE') return { success: true, message: 'Printer disabled, cannot open drawer' };
 
-        const device = getPrinterDevice(type, addr, port);
-        if (!device) throw new Error("Could not initialize printer device");
-
-        const printer = new escpos.Printer(device);
-
-        device.open((err) => {
-            if (err) return console.error("Drawer kick error:", err);
-            // printer.cashdraw(2).close();
-            printer.close();
+        // Goes through the queue so it never collides with a receipt on the same printer
+        queuePrint('Cash drawer', cfg, (printer) => {
+            // printer.cashdraw(2);
         });
-        return { success: true };
+        return { success: true, queued: true };
     } catch (e) {
         return { success: false, error: e.message };
     }
 });
 
+// The live queues only show the last 24h. Orders left Pending/Assigned longer than that
+// (never paid or never marked delivered) used to pile up in the queue forever; they stay
+// in the database untouched and are reachable from Order History (see get-stale-pending-count).
+const QUEUE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const queueCutoff = () => new Date(Date.now() - QUEUE_WINDOW_MS).toISOString();
+// julianday() reads both ISO ('…T…Z') and SQLite ('YYYY-MM-DD HH:MM:SS') createdAt values
+const PENDING_SQL = "status IN ('Pending', 'Assigned')";
+const DELIVERY_SQL = "customerName IS NOT NULL AND status IN ('Pending', 'Assigned')";
+
 ipcMain.handle('get-pending-orders', async () => {
     try {
         const db = getDb();
-        return db.prepare("SELECT * FROM orders WHERE status IN ('Pending', 'Assigned') ORDER BY createdAt DESC").all();
+        return db.prepare(`SELECT * FROM orders WHERE ${PENDING_SQL} AND julianday(createdAt) >= julianday(?) ORDER BY createdAt DESC`).all(queueCutoff());
     } catch (e) {
         console.error("Failed to fetch pending orders:", e);
         return [];
@@ -575,10 +672,22 @@ ipcMain.handle('get-pending-orders', async () => {
 ipcMain.handle('get-delivery-orders', async () => {
     try {
         const db = getDb();
-        return db.prepare("SELECT * FROM orders WHERE customerName IS NOT NULL AND status IN ('Pending', 'Assigned') ORDER BY createdAt DESC").all();
+        return db.prepare(`SELECT * FROM orders WHERE ${DELIVERY_SQL} AND julianday(createdAt) >= julianday(?) ORDER BY createdAt DESC`).all(queueCutoff());
     } catch (e) {
         console.error("Failed to fetch delivery orders:", e);
         return [];
+    }
+});
+
+// How many orders the queue is hiding because they're older than the window
+ipcMain.handle('get-stale-pending-count', async (event, kind) => {
+    try {
+        const db = getDb();
+        const where = kind === 'delivery' ? DELIVERY_SQL : PENDING_SQL;
+        return db.prepare(`SELECT COUNT(*) AS c FROM orders WHERE ${where} AND julianday(createdAt) < julianday(?)`).get(queueCutoff()).c;
+    } catch (e) {
+        console.error("Failed to count stale pending orders:", e);
+        return 0;
     }
 });
 
@@ -647,13 +756,95 @@ ipcMain.handle('get-sync-status', async () => {
     }
 });
 
-ipcMain.handle('get-order-history', async () => {
+// Escapes LIKE wildcards so a typed % or _ is matched literally
+const likeTerm = (s) => `%${s.replace(/[\\%_]/g, '\\$&')}%`;
+
+// Builds the WHERE clause for one search word. Every word must match somewhere (AND),
+// so "ali zinger" finds Ali's orders that contained a Zinger.
+function historySearchCondition(token, params) {
+    // "#12" means the daily order number only
+    if (/^#\d+$/.test(token)) {
+        params.push(parseInt(token.slice(1), 10));
+        return 'dailyOrderNumber = ?';
+    }
+
+    const like = likeTerm(token);
+    const conds = [
+        "id LIKE ? ESCAPE '\\'",
+        "customerName LIKE ? ESCAPE '\\'",
+        "customerAddress LIKE ? ESCAPE '\\'",
+        "customerPhone LIKE ? ESCAPE '\\'",
+        "tableNo LIKE ? ESCAPE '\\'",
+        "paymentMethod LIKE ? ESCAPE '\\'",
+        "status LIKE ? ESCAPE '\\'",
+        "REPLACE(orderType, '_', ' ') LIKE ? ESCAPE '\\'",
+        `EXISTS (SELECT 1 FROM order_items oi LEFT JOIN products p ON p.id = oi.productId
+                 WHERE oi.orderId = orders.id AND (p.name LIKE ? ESCAPE '\\' OR oi.variantName LIKE ? ESCAPE '\\'))`,
+    ];
+    params.push(like, like, like, like, like, like, like, like, like, like);
+
+    // Phone numbers: ignore formatting, and treat 0300… and +92300… as the same number
+    const compact = token.replace(/[\s\-+()]/g, '');
+    if (/^\d{3,}$/.test(compact)) {
+        const variants = new Set([compact]);
+        if (compact.startsWith('0')) variants.add('92' + compact.slice(1));
+        if (compact.startsWith('92')) variants.add('0' + compact.slice(2));
+        for (const v of variants) {
+            conds.push("REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(customerPhone, '-', ''), ' ', ''), '+', ''), '(', ''), ')', '') LIKE ?");
+            params.push(`%${v}%`);
+        }
+    }
+
+    // Plain numbers can also be the daily order number or the bill total
+    if (/^\d+$/.test(token)) {
+        const n = parseInt(token, 10);
+        conds.push('dailyOrderNumber = ?', 'CAST(ROUND(total) AS INTEGER) = ?');
+        params.push(n, n);
+    }
+
+    return `(${conds.join(' OR ')})`;
+}
+
+// Paginated + searchable history. Filtering happens in SQLite so the UI only ever
+// receives one page instead of every order ever taken.
+ipcMain.handle('get-order-history', async (event, opts = {}) => {
     try {
         const db = getDb();
-        return db.prepare('SELECT * FROM orders ORDER BY createdAt DESC').all();
+        const pageSize = Math.min(Math.max(parseInt(opts.pageSize, 10) || 50, 1), 200);
+        const where = [];
+        const params = [];
+
+        // Business day (6am–6am), the same day boundary the daily order numbers use
+        if (opts.date && /^\d{4}-\d{2}-\d{2}$/.test(opts.date)) {
+            const dayStart = new Date(`${opts.date}T00:00:00`).getTime();
+            // Loose createdAt bounds let the index narrow the scan before the exact day check
+            where.push("createdAt >= ? AND createdAt < ? AND date(createdAt, 'localtime', '-6 hours') = ?");
+            params.push(
+                new Date(dayStart - 86400000).toISOString(),
+                new Date(dayStart + 2 * 86400000).toISOString(),
+                opts.date
+            );
+        }
+
+        // Status is stored as both 'Completed' and 'COMPLETED', so compare upper-cased
+        if (opts.status === 'COMPLETED') where.push("UPPER(status) = 'COMPLETED'");
+        else if (opts.status === 'PENDING') where.push("UPPER(status) IN ('PENDING', 'ASSIGNED')");
+        else if (opts.status === 'CANCELLED') where.push("UPPER(status) LIKE 'CANCELLED%'");
+
+        const tokens = String(opts.search || '').trim().split(/\s+/).filter(Boolean).slice(0, 8);
+        for (const token of tokens) where.push(historySearchCondition(token, params));
+
+        const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+        const total = db.prepare(`SELECT COUNT(*) AS c FROM orders ${whereSql}`).get(...params).c;
+        const totalPages = Math.max(1, Math.ceil(total / pageSize));
+        const page = Math.min(Math.max(parseInt(opts.page, 10) || 1, 1), totalPages);
+        const orders = db.prepare(`SELECT * FROM orders ${whereSql} ORDER BY createdAt DESC LIMIT ? OFFSET ?`)
+            .all(...params, pageSize, (page - 1) * pageSize);
+
+        return { orders, total, page, pageSize, totalPages };
     } catch (e) {
         console.error("Failed to fetch order history:", e);
-        return [];
+        return { orders: [], total: 0, page: 1, pageSize: 50, totalPages: 1, error: e.message };
     }
 });
 

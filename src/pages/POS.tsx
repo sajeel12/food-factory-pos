@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, memo } from 'react';
 import { Search, ShoppingBag, Plus, Minus, Trash2, Printer, CreditCard, X, Truck, Ticket, Clock, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import ReceiptPreview from '../components/ReceiptPreview';
+import StaleOrdersNotice from '../components/StaleOrdersNotice';
 
 declare global {
     interface Window {
@@ -29,6 +30,49 @@ interface Product {
     isDeal?: boolean;
     dealItems?: { productId: string; name: string; quantity: number, variantId?: string | null }[];
 }
+
+// Memoized so typing in the cart/checkout inputs or the 10s queue refresh doesn't
+// re-render every menu card (each carrying a base64 image).
+const ProductGrid = memo(function ProductGrid({ products, onSelect, onShowDeal }: {
+    products: Product[];
+    onSelect: (product: Product) => void;
+    onShowDeal: (product: Product) => void;
+}) {
+    return (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(170px,1fr))] gap-4">
+            {products.map(product => (
+                <div
+                    key={product.id}
+                    onClick={() => onSelect(product)}
+                    className="bg-white p-4 rounded-3xl border border-gray-100 shadow-sm hover:border-blue-300 hover:shadow-xl cursor-pointer flex flex-col items-center text-center group transition-all relative"
+                >
+                    {product.isDeal && (
+                        <div className="absolute top-2 right-2 bg-purple-600 text-white text-[10px] uppercase font-black px-2 py-1 rounded-md shadow-sm z-10">
+                            DEAL
+                        </div>
+                    )}
+                    <div className="text-5xl mb-3 p-4 bg-gray-50 rounded-2xl group-hover:bg-blue-50 w-full aspect-square flex items-center justify-center overflow-hidden">
+                        {product.image ? (
+                            <img src={product.image} loading="lazy" decoding="async" className="w-full h-full object-cover" />
+                        ) : (
+                            product.img
+                        )}
+                    </div>
+                    <h3 className="font-bold text-gray-800 leading-tight mb-1 line-clamp-2">{product.name}</h3>
+                    {product.isDeal && product.dealItems && product.dealItems.length > 0 && (
+                        <button
+                            onClick={(e) => { e.stopPropagation(); onShowDeal(product); }}
+                            className="text-[10px] bg-purple-100 text-purple-700 font-bold px-2 py-1 rounded-md mt-1 mb-2 hover:bg-purple-200 transition-colors uppercase tracking-wider outline-none"
+                        >
+                            View Contents
+                        </button>
+                    )}
+                    <p className="text-blue-600 font-extrabold mt-auto pt-2">PKR {Number(product.price).toFixed(0)}</p>
+                </div>
+            ))}
+        </div>
+    );
+});
 
 export default function POS() {
     const { user } = useAuth();
@@ -66,23 +110,40 @@ export default function POS() {
     const [deliveryModalOrder, setDeliveryModalOrder] = useState<any | null>(null);
     const [riders, setRiders] = useState<{ id: string; name: string }[]>([]);
 
-    const handlePhoneChange = async (val: string) => {
-        setDeliveryInfo({ ...deliveryInfo, phone: val });
-        if (val.length >= 3 && ipcRenderer) {
+    // Phone autofill: wait for a pause in typing, and ignore results from older keystrokes
+    // that arrive after newer ones (or after a suggestion was already picked)
+    const phoneSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const phoneSearchId = useRef(0);
+    const clearCustomerSuggestions = () => {
+        phoneSearchId.current++;
+        if (phoneSearchTimer.current) clearTimeout(phoneSearchTimer.current);
+        setCustomerSuggestions([]);
+    };
+    useEffect(() => () => {
+        if (phoneSearchTimer.current) clearTimeout(phoneSearchTimer.current);
+    }, []);
+
+    const handlePhoneChange = (val: string) => {
+        setDeliveryInfo(prev => ({ ...prev, phone: val }));
+        if (val.length < 3 || !ipcRenderer) {
+            clearCustomerSuggestions();
+            return;
+        }
+        const id = ++phoneSearchId.current;
+        if (phoneSearchTimer.current) clearTimeout(phoneSearchTimer.current);
+        phoneSearchTimer.current = setTimeout(async () => {
             try {
                 const matches = await ipcRenderer.invoke('search-customer', val);
-                setCustomerSuggestions(matches);
+                if (id === phoneSearchId.current) setCustomerSuggestions(matches);
             } catch (e) {
                 console.error(e);
             }
-        } else {
-            setCustomerSuggestions([]);
-        }
+        }, 250);
     };
 
     const selectCustomer = (c: { id: string; name: string; phone: string; address: string | null; loyaltyPoints: number }) => {
         setDeliveryInfo({ name: c.name, phone: c.phone, address: c.address || '' });
-        setCustomerSuggestions([]);
+        clearCustomerSuggestions();
     };
 
     useEffect(() => {
@@ -184,55 +245,16 @@ export default function POS() {
         };
     }, [user?.branchId]);
 
-    const filteredProducts = products.filter(p =>
-        (activeCategory === 'All' || p.category === activeCategory) &&
-        p.name.toLowerCase().includes(search.toLowerCase())
-    );
+    const filteredProducts = useMemo(() => {
+        const term = search.toLowerCase();
+        return products.filter(p =>
+            (activeCategory === 'All' || p.category === activeCategory) &&
+            p.name.toLowerCase().includes(term)
+        );
+    }, [products, activeCategory, search]);
 
-    const handleProductClick = (product: Product) => {
-        if (product.isDeal) {
-            // Check if any deal items require choices (has variants but no fixed variantId)
-            const itemsRequiringChoice = product.dealItems?.filter(di => {
-                const subP = products.find(p => p.id === di.productId);
-                return subP && subP.variants && subP.variants.length > 0 && !di.variantId;
-            }) || [];
-
-            if (itemsRequiringChoice.length > 0) {
-                setSelectedDealForChoices(product);
-            } else {
-                addToCartAction(product);
-            }
-        } else if (product.variants && product.variants.length > 0) {
-            setSelectedProductForVariant(product);
-        } else {
-            addToCartAction(product);
-        }
-    };
-
-    const handleDealChoicesComplete = (product: Product, choices: any[]) => {
-        const allDealChoices = product.dealItems?.map(di => {
-            const choice = choices.find(c => c.productId === di.productId);
-            if (choice) return { productName: choice.productName, variantName: choice.variantName, quantity: di.quantity };
-            const subP = products.find(p => p.id === di.productId);
-            const subVariant = subP?.variants?.find(v => v.id === di.variantId);
-            return { productName: subP?.name || di.name, variantName: subVariant?.name || '', quantity: di.quantity };
-        }) || [];
-
-        setCart(prev => {
-            const uniqueId = `${product.id}-${Date.now()}`; // Deals with choices always unique
-            return [...prev, {
-                uniqueId,
-                id: product.id,
-                name: product.name,
-                price: product.price,
-                qty: 1,
-                dealChoices: allDealChoices
-            }];
-        });
-        setSelectedDealForChoices(null);
-    };
-
-    const addToCartAction = (product: Product, variant?: { id: string; name: string; price: number }) => {
+    // Stable across renders (only changes when the menu reloads) so the memoized grid stays put
+    const addToCartAction = useCallback((product: Product, variant?: { id: string; name: string; price: number }) => {
         let finalDealChoices = undefined;
         if (product.isDeal && product.dealItems) {
             finalDealChoices = product.dealItems.map(di => {
@@ -258,6 +280,49 @@ export default function POS() {
             }];
         });
         setSelectedProductForVariant(null);
+    }, [products]);
+
+    const handleProductClick = useCallback((product: Product) => {
+        if (product.isDeal) {
+            // Check if any deal items require choices (has variants but no fixed variantId)
+            const itemsRequiringChoice = product.dealItems?.filter(di => {
+                const subP = products.find(p => p.id === di.productId);
+                return subP && subP.variants && subP.variants.length > 0 && !di.variantId;
+            }) || [];
+
+            if (itemsRequiringChoice.length > 0) {
+                setSelectedDealForChoices(product);
+            } else {
+                addToCartAction(product);
+            }
+        } else if (product.variants && product.variants.length > 0) {
+            setSelectedProductForVariant(product);
+        } else {
+            addToCartAction(product);
+        }
+    }, [products, addToCartAction]);
+
+    const handleDealChoicesComplete = (product: Product, choices: any[]) => {
+        const allDealChoices = product.dealItems?.map(di => {
+            const choice = choices.find(c => c.productId === di.productId);
+            if (choice) return { productName: choice.productName, variantName: choice.variantName, quantity: di.quantity };
+            const subP = products.find(p => p.id === di.productId);
+            const subVariant = subP?.variants?.find(v => v.id === di.variantId);
+            return { productName: subP?.name || di.name, variantName: subVariant?.name || '', quantity: di.quantity };
+        }) || [];
+
+        setCart(prev => {
+            const uniqueId = `${product.id}-${Date.now()}`; // Deals with choices always unique
+            return [...prev, {
+                uniqueId,
+                id: product.id,
+                name: product.name,
+                price: product.price,
+                qty: 1,
+                dealChoices: allDealChoices
+            }];
+        });
+        setSelectedDealForChoices(null);
     };
 
     const updateQty = (uniqueId: string, delta: number) => {
@@ -649,38 +714,7 @@ export default function POS() {
                 </div>
 
                 <div className="flex-1 overflow-y-auto pr-2 pb-24">
-                    <div className="grid grid-cols-[repeat(auto-fill,minmax(170px,1fr))] gap-4">
-                        {filteredProducts.map(product => (
-                            <div
-                                key={product.id}
-                                onClick={() => handleProductClick(product)}
-                                className="bg-white p-4 rounded-3xl border border-gray-100 shadow-sm hover:border-blue-300 hover:shadow-xl cursor-pointer flex flex-col items-center text-center group transition-all relative"
-                            >
-                                {product.isDeal && (
-                                    <div className="absolute top-2 right-2 bg-purple-600 text-white text-[10px] uppercase font-black px-2 py-1 rounded-md shadow-sm z-10">
-                                        DEAL
-                                    </div>
-                                )}
-                                <div className="text-5xl mb-3 p-4 bg-gray-50 rounded-2xl group-hover:bg-blue-50 w-full aspect-square flex items-center justify-center overflow-hidden">
-                                    {product.image ? (
-                                        <img src={product.image} className="w-full h-full object-cover" />
-                                    ) : (
-                                        product.img
-                                    )}
-                                </div>
-                                <h3 className="font-bold text-gray-800 leading-tight mb-1 line-clamp-2">{product.name}</h3>
-                                {product.isDeal && product.dealItems && product.dealItems.length > 0 && (
-                                    <button
-                                        onClick={(e) => { e.stopPropagation(); setSelectedDealForDetails(product); }}
-                                        className="text-[10px] bg-purple-100 text-purple-700 font-bold px-2 py-1 rounded-md mt-1 mb-2 hover:bg-purple-200 transition-colors uppercase tracking-wider outline-none"
-                                    >
-                                        View Contents
-                                    </button>
-                                )}
-                                <p className="text-blue-600 font-extrabold mt-auto pt-2">PKR {Number(product.price).toFixed(0)}</p>
-                            </div>
-                        ))}
-                    </div>
+                    <ProductGrid products={filteredProducts} onSelect={handleProductClick} onShowDeal={setSelectedDealForDetails} />
                 </div>
             </div>
 
@@ -845,7 +879,7 @@ export default function POS() {
                                                         key={c.id}
                                                         onClick={() => {
                                                             setDeliveryInfo({ name: c.name, phone: c.phone, address: c.address || '' });
-                                                            setCustomerSuggestions([]);
+                                                            clearCustomerSuggestions();
                                                         }}
                                                         className="p-2 hover:bg-blue-50 cursor-pointer border-b border-gray-100 last:border-0"
                                                     >
@@ -940,7 +974,7 @@ export default function POS() {
 
             {/* Cash Modal */}
             {checkoutMode === 'Cash' && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
                     <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8">
                         <div className="flex justify-between items-center mb-8">
                             <h2 className="text-2xl font-bold">Cash Checkout</h2>
@@ -977,7 +1011,7 @@ export default function POS() {
 
             {/* Card Checkout Confirmation */}
             {checkoutMode === 'Card' && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
                     <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center">
                         <CreditCard size={48} className="mx-auto text-blue-600 mb-4" />
                         <h2 className="text-2xl font-bold mb-2">Card Payment</h2>
@@ -996,7 +1030,7 @@ export default function POS() {
 
             {/* Delivery Modal */}
             {checkoutMode === 'Delivery' && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
                     <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8">
                         <div className="flex justify-between items-center mb-6">
                             <h2 className="text-2xl font-bold flex items-center"><Truck className="mr-2" /> Delivery Details</h2>
@@ -1078,7 +1112,7 @@ export default function POS() {
 
             {/* Variant Selection Modal */}
             {selectedProductForVariant && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 animate-in fade-in duration-200">
                     <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 relative">
                         <button onClick={() => setSelectedProductForVariant(null)} className="absolute top-4 right-4 p-2 bg-transparent text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors outline-none"><X size={20} /></button>
                         <div className="text-center mb-6">
@@ -1110,7 +1144,7 @@ export default function POS() {
 
             {/* Deal Details Modal */}
             {selectedDealForDetails && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 animate-in fade-in duration-200">
                     <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 relative">
                         <button onClick={() => setSelectedDealForDetails(null)} className="absolute top-4 right-4 p-2 bg-transparent text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors outline-none"><X size={20} /></button>
                         <div className="text-center mb-6">
@@ -1147,7 +1181,7 @@ export default function POS() {
 
             {/* Delivery Order Manage Modal */}
             {deliveryModalOrder && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
                     <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 relative">
                         <button onClick={() => setDeliveryModalOrder(null)} className="absolute top-4 right-4 p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors outline-none"><X size={20} /></button>
                         <div className="mb-5">
@@ -1246,6 +1280,9 @@ export default function POS() {
                             onChange={(e) => setQueueSearch(e.target.value)}
                             className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs outline-none focus:border-blue-500 transition-all font-bold"
                         />
+                    </div>
+                    <div className="mt-2 empty:hidden">
+                        <StaleOrdersNotice kind="pending" />
                     </div>
                 </div>
 
@@ -1401,7 +1438,7 @@ function DealChoiceModal({ deal, allProducts, onClose, onComplete }: { deal: Pro
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 animate-in fade-in duration-200">
             <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 relative">
                 <button onClick={onClose} className="absolute top-4 right-4 p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"><X size={20} /></button>
 
