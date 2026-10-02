@@ -1,6 +1,7 @@
 import { Wifi, Battery, Clock, Bell, Cloud, CloudOff, RefreshCw, Download } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
+import AppVersion from './AppVersion';
 
 // Safely require ipcRenderer
 const ipcRenderer = typeof window !== 'undefined' && window.require ? window.require('electron').ipcRenderer : null;
@@ -110,9 +111,12 @@ export default function Header({ shiftId }: { shiftId?: string }) {
         <>
         <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 shadow-sm z-10 shrink-0 select-none">
             <div className="flex items-center space-x-6 text-gray-800">
-                <h1 className="text-xl font-bold tracking-tight">
-                    {user?.branchName || 'Terminal'}
-                </h1>
+                <div className="flex items-baseline space-x-2">
+                    <h1 className="text-xl font-bold tracking-tight">
+                        {user?.branchName || 'Terminal'}
+                    </h1>
+                    <AppVersion className="text-xs font-semibold text-gray-400" />
+                </div>
 
                 {/* Sync Status Badge */}
                 <div className="flex items-center space-x-2">

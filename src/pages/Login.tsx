@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { LogIn, AlertCircle } from 'lucide-react';
+import AppVersion from '../components/AppVersion';
 
 export default function Login() {
     const { login } = useAuth();
@@ -28,6 +29,7 @@ export default function Login() {
                 <div className="flex flex-col items-center mb-8">
                     <img src="./logo.png" alt="Food Factory" className="h-24 w-auto mb-4" />
                     <p className="text-gray-400 mt-1 text-sm">Point of Sale Terminal</p>
+                    <AppVersion className="text-gray-500 mt-1 text-xs font-semibold tracking-wider" />
                 </div>
 
                 {/* Login Card */}
