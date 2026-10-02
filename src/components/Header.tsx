@@ -1,4 +1,4 @@
-import { Wifi, Battery, Clock, Bell, Cloud, CloudOff, RefreshCw } from 'lucide-react';
+import { Wifi, Battery, Clock, Bell, Cloud, CloudOff, RefreshCw, Download } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 
@@ -20,6 +20,25 @@ export default function Header({ shiftId }: { shiftId?: string }) {
     const [ending, setEnding] = useState(false);
 
     const prevUnsynced = useRef(0);
+    const [updateReady, setUpdateReady] = useState<{ version: string } | null>(null);
+
+    // A new version was downloaded in the background; it installs when the app closes,
+    // or now if the cashier chooses to restart
+    useEffect(() => {
+        if (!ipcRenderer) return;
+        const onReady = (_e: unknown, info: { version: string }) => setUpdateReady(info);
+        ipcRenderer.invoke('get-update-status').then((info: { version: string } | null) => {
+            if (info) setUpdateReady(info);
+        }).catch(() => { });
+        ipcRenderer.on('update-ready', onReady);
+        return () => { ipcRenderer.removeListener('update-ready', onReady); };
+    }, []);
+
+    const installUpdate = async () => {
+        if (!ipcRenderer || !updateReady) return;
+        if (!confirm(`Restart now to install version ${updateReady.version}?\n\nSaved orders are kept. If you choose Cancel, it installs automatically the next time the app is closed.`)) return;
+        await ipcRenderer.invoke('install-update');
+    };
 
     useEffect(() => {
         // Only hours:minutes are shown, so a 1s tick just re-rendered the header for nothing
@@ -117,6 +136,16 @@ export default function Header({ shiftId }: { shiftId?: string }) {
                             </>
                         )}
                     </span>
+
+                    {updateReady && (
+                        <button
+                            onClick={installUpdate}
+                            title="A new version has been downloaded"
+                            className="px-3 py-1 bg-emerald-100 text-emerald-800 hover:bg-emerald-200 text-xs font-semibold rounded-full uppercase tracking-wider flex items-center shadow-sm border border-emerald-200"
+                        >
+                            <Download size={14} className="mr-1.5" /> Update {updateReady.version} ready, restart
+                        </button>
+                    )}
 
                     {/* Temporary sync animation overlay if catching up */}
                     {isSyncing && (

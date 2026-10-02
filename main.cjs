@@ -1,6 +1,18 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
-if (require('electron-squirrel-startup')) app.quit();
 const path = require('path');
+const fs = require('fs');
+
+// Keep the local database (orders, printer settings, login) where existing installs have it.
+// Electron derives this folder from package.json's name, which has changed before
+// (pos-desktop -> food-factory-pos); use whichever folder already holds a database so a
+// rename or a different build tool can never start a terminal on an empty database.
+(function pinUserDataDir() {
+    const appData = app.getPath('appData');
+    const candidates = ['food-factory-pos', 'pos-desktop', 'FoodFactoryPOS'].map(name => path.join(appData, name));
+    const existing = candidates.find(dir => fs.existsSync(path.join(dir, 'pos-local.db')));
+    app.setPath('userData', existing || candidates[0]);
+})();
+
 const { initDb, getDb } = require('./db.cjs');
 const { startSyncWorker, performSync } = require('./sync.cjs');
 const escpos = require('escpos');
@@ -899,6 +911,68 @@ ipcMain.handle('force-sync', async () => {
     }
 });
 
+// ── Auto-update ──
+// Installed builds check GitHub Releases for a newer version, download it in the background,
+// and install it when the app is closed, or right away if the cashier clicks Restart in the
+// header. The repo is private, so the release workflow writes a read-only UPDATE_TOKEN into
+// the packaged .env (.github/workflows/release.yml).
+const UPDATE_CHECK_INTERVAL_MS = 2 * 60 * 60 * 1000;
+let autoUpdater = null;
+let updateReady = null;
+
+function readEnvValue(key) {
+    try {
+        const content = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
+        const match = content.match(new RegExp(`^${key}=(.*)$`, 'm'));
+        return match ? match[1].trim() : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function setupAutoUpdates() {
+    if (!app.isPackaged) return;
+    try {
+        ({ autoUpdater } = require('electron-updater'));
+    } catch (e) {
+        console.error('Auto-update unavailable:', e.message);
+        return;
+    }
+    const token = readEnvValue('UPDATE_TOKEN');
+    autoUpdater.setFeedURL({
+        provider: 'github',
+        owner: 'sajeel12',
+        repo: 'food-factory-pos',
+        ...(token ? { private: true, token } : {}),
+    });
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on('update-downloaded', (info) => {
+        updateReady = { version: info.version };
+        BrowserWindow.getAllWindows().forEach(win => {
+            if (!win.isDestroyed()) win.webContents.send('update-ready', updateReady);
+        });
+    });
+    // Offline or GitHub unreachable: just try again at the next interval
+    autoUpdater.on('error', (e) => console.error('Auto-update error:', e?.message || e));
+    const check = () => autoUpdater.checkForUpdates().catch(e => console.error('Update check failed:', e?.message || e));
+    check();
+    setInterval(check, UPDATE_CHECK_INTERVAL_MS);
+}
+
+ipcMain.handle('get-update-status', () => updateReady);
+
+ipcMain.handle('install-update', async () => {
+    if (!autoUpdater || !updateReady) return { success: false };
+    // Let slips that are already queued finish printing before the app restarts
+    const deadline = Date.now() + 10000;
+    while (printQueues.size > 0 && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 200));
+    }
+    autoUpdater.quitAndInstall(true, true); // silent install, relaunch afterwards
+    return { success: true };
+});
+
 app.whenReady().then(() => {
     initDb();
     createWindow();
@@ -907,6 +981,7 @@ app.whenReady().then(() => {
             if (!win.isDestroyed()) win.webContents.send('sync-completed');
         });
     });
+    setupAutoUpdates();
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
