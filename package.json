@@ -25,6 +25,7 @@
       "main.cjs",
       "db.cjs",
       "sync.cjs",
+      "logger.cjs",
       ".env",
       "build/icon.ico"
     ],

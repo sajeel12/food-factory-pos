@@ -14,7 +14,8 @@ const fs = require('fs');
 })();
 
 const { initDb, getDb } = require('./db.cjs');
-const { startSyncWorker, performSync } = require('./sync.cjs');
+const { createFileLogger } = require('./logger.cjs');
+const { startSyncWorker, performSync, getLastPushError } = require('./sync.cjs');
 const escpos = require('escpos');
 escpos.USB = require('escpos-usb');
 escpos.Network = require('escpos-network');
@@ -762,7 +763,8 @@ ipcMain.handle('get-sync-status', async () => {
     try {
         const db = getDb();
         const result = db.prepare('SELECT COUNT(*) as count FROM orders WHERE synced = 0').get();
-        return { unsyncedOrders: result.count };
+        // Why the last upload failed (status + message), so the header can say it out loud
+        return { unsyncedOrders: result.count, pushError: getLastPushError() };
     } catch (e) {
         return { unsyncedOrders: 0, error: e.message };
     }
@@ -932,21 +934,6 @@ function readEnvValue(key) {
 
 // Update activity goes to <userData>\update.log (e.g. %APPDATA%\food-factory-pos\update.log),
 // since an installed app has no visible console to check why an update didn't arrive.
-// Trimmed to the last ~200KB so it never grows unbounded.
-function createUpdateLogger() {
-    const file = path.join(app.getPath('userData'), 'update.log');
-    try {
-        if (fs.existsSync(file) && fs.statSync(file).size > 400 * 1024) {
-            fs.writeFileSync(file, fs.readFileSync(file, 'utf8').slice(-200 * 1024));
-        }
-    } catch (e) { /* logging must never break the app */ }
-    const write = (level) => (...args) => {
-        const line = args.map(a => (a instanceof Error ? a.stack || a.message : typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
-        try { fs.appendFileSync(file, `${new Date().toISOString()} [${level}] ${line}\n`); } catch (e) { /* ignore */ }
-    };
-    return { info: write('info'), warn: write('warn'), error: write('error'), debug: () => { } };
-}
-
 function setupAutoUpdates() {
     if (!app.isPackaged) return;
     try {
@@ -955,7 +942,7 @@ function setupAutoUpdates() {
         console.error('Auto-update unavailable:', e.message);
         return;
     }
-    autoUpdater.logger = createUpdateLogger();
+    autoUpdater.logger = createFileLogger('update.log');
     autoUpdater.logger.info(`App ${app.getVersion()} started; checking for updates`);
     const token = readEnvValue('UPDATE_TOKEN');
     autoUpdater.setFeedURL({

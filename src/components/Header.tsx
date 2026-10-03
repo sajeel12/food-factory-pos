@@ -1,4 +1,4 @@
-import { Wifi, Battery, Clock, Bell, Cloud, CloudOff, RefreshCw, Download } from 'lucide-react';
+import { Wifi, Battery, Clock, Bell, Cloud, CloudOff, RefreshCw, Download, AlertTriangle } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import AppVersion from './AppVersion';
@@ -9,6 +9,7 @@ const ipcRenderer = typeof window !== 'undefined' && window.require ? window.req
 export default function Header({ shiftId }: { shiftId?: string }) {
     const { user } = useAuth();
     const [time, setTime] = useState(new Date());
+    const [pushError, setPushError] = useState<{ status: number; message: string } | null>(null);
     const [syncStatus, setSyncStatus] = useState<{ isOnline: boolean; unsynced: number }>({
         isOnline: navigator.onLine,
         unsynced: 0
@@ -69,6 +70,9 @@ export default function Header({ shiftId }: { shiftId?: string }) {
                     }
                     prevUnsynced.current = unsynced;
                     setSyncStatus(prev => (prev.unsynced === unsynced ? prev : { ...prev, unsynced }));
+                    // Why uploads are failing, so a stuck queue isn't silent (e.g. a 403 on the account)
+                    const err = result?.pushError || null;
+                    setPushError(prev => (prev?.status === err?.status && prev?.message === err?.message ? prev : err));
                 } catch (e) {
                     console.error('Failed to get sync status', e);
                 }
@@ -120,26 +124,43 @@ export default function Header({ shiftId }: { shiftId?: string }) {
 
                 {/* Sync Status Badge */}
                 <div className="flex items-center space-x-2">
-                    <span className={`px-3 py-1 text-xs font-semibold rounded-full uppercase tracking-wider flex items-center shadow-sm ${!syncStatus.isOnline
-                        ? 'bg-red-100 text-red-700'
-                        : syncStatus.unsynced > 0
-                            ? 'bg-amber-100 text-amber-700'
-                            : 'bg-green-100 text-green-700'
-                        }`}>
-                        {!syncStatus.isOnline ? (
-                            <>
-                                <CloudOff size={14} className="mr-1.5" /> Offline
-                            </>
-                        ) : syncStatus.unsynced > 0 ? (
-                            <>
-                                <Cloud size={14} className="mr-1.5" /> Unsynced: {syncStatus.unsynced}
-                            </>
-                        ) : (
-                            <>
-                                <span className="w-2 h-2 rounded-full bg-green-500 mr-2 animate-pulse"></span> Online
-                            </>
-                        )}
-                    </span>
+                    {syncStatus.isOnline && syncStatus.unsynced > 0 && pushError ? (
+                        <span
+                            title={pushError.message}
+                            className="px-3 py-1 text-xs font-semibold rounded-full uppercase tracking-wider flex items-center shadow-sm bg-red-100 text-red-700"
+                        >
+                            <AlertTriangle size={14} className="mr-1.5" />
+                            {pushError.status === 401
+                                ? 'Upload failed: log in again'
+                                : pushError.status === 403
+                                    ? 'Upload refused: check POS role'
+                                    : pushError.status === 0
+                                        ? 'Upload failing: network'
+                                        : `Upload failing (${pushError.status})`}
+                            {` · ${syncStatus.unsynced} waiting`}
+                        </span>
+                    ) : (
+                        <span className={`px-3 py-1 text-xs font-semibold rounded-full uppercase tracking-wider flex items-center shadow-sm ${!syncStatus.isOnline
+                            ? 'bg-red-100 text-red-700'
+                            : syncStatus.unsynced > 0
+                                ? 'bg-amber-100 text-amber-700'
+                                : 'bg-green-100 text-green-700'
+                            }`}>
+                            {!syncStatus.isOnline ? (
+                                <>
+                                    <CloudOff size={14} className="mr-1.5" /> Offline
+                                </>
+                            ) : syncStatus.unsynced > 0 ? (
+                                <>
+                                    <Cloud size={14} className="mr-1.5" /> Unsynced: {syncStatus.unsynced}
+                                </>
+                            ) : (
+                                <>
+                                    <span className="w-2 h-2 rounded-full bg-green-500 mr-2 animate-pulse"></span> Online
+                                </>
+                            )}
+                        </span>
+                    )}
 
                     {updateReady && (
                         <button

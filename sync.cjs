@@ -2,6 +2,30 @@ const { getDb } = require('./db.cjs');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { createFileLogger } = require('./logger.cjs');
+
+// Sync problems go to <userData>\sync.log; the console isn't visible on an installed POS
+const syncLog = createFileLogger('sync.log');
+const LOG_REPEAT_MS = 10 * 60 * 1000;
+const lastLogged = new Map();
+
+// The same failure repeats every sync, so log it once, then again only if it changes or
+// every 10 minutes; log one line when it recovers.
+function logProblem(key, level, message) {
+    const prev = lastLogged.get(key);
+    const now = Date.now();
+    if (prev && prev.message === message && now - prev.at < LOG_REPEAT_MS) return;
+    lastLogged.set(key, { message, at: now });
+    syncLog[level](`${key}: ${message}`);
+}
+function logRecovered(key) {
+    if (lastLogged.delete(key)) syncLog.info(`${key}: OK again`);
+}
+
+// Why the last order upload failed ({ status, message, at }), shown in the POS header;
+// null when the last push went through or nothing is waiting
+let lastPushError = null;
+const getLastPushError = () => lastPushError;
 
 let API_URL = 'https://food-factory-cloud-backend.onrender.com';
 try {
@@ -132,7 +156,12 @@ async function runSync() {
             reqHeaders['Cache-Control'] = 'max-age=0';
         }
         const response = await fetch(url, { headers: reqHeaders, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-        if (response.status === 304 || !response.ok) return null;
+        if (response.status !== 304 && !response.ok) {
+            logProblem(`pull ${key}`, 'warn', `HTTP ${response.status}`);
+            return null;
+        }
+        logRecovered(`pull ${key}`);
+        if (response.status === 304) return null;
         const etag = response.headers.get('etag');
         let data;
         try { data = JSON.parse(await response.text()); } catch (e) { return null; }
@@ -183,6 +212,7 @@ async function runSync() {
                 for (const o of orders) markSynced.run(o.id, o.status, o.total);
             });
 
+            let pushFailure = null;
             for (let i = 0; i < unsyncedOrders.length; i += ORDER_PUSH_CHUNK) {
                 const chunk = unsyncedOrders.slice(i, i + ORDER_PUSH_CHUNK);
                 const fullOrders = chunk.map(order => ({
@@ -200,11 +230,13 @@ async function runSync() {
                         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
                     });
                 } catch (netErr) {
+                    pushFailure = { status: 0, message: `Network error: ${netErr.message}` };
                     break; // offline or timed out; the remaining chunks would fail the same way
                 }
 
                 if (!response.ok) {
-                    console.error(`Order push rejected (${response.status}) for ${chunk.length} orders; will retry`);
+                    const detail = (await response.text().catch(() => '')).slice(0, 300);
+                    pushFailure = { status: response.status, message: `HTTP ${response.status}${detail ? `: ${detail}` : ''}` };
                     continue;
                 }
 
@@ -216,9 +248,23 @@ async function runSync() {
                 markAllSynced(saved);
                 if (saved.length > 0) changed = true;
                 if (body?.failed?.length) {
-                    console.error(`Cloud could not save ${body.failed.length} orders; will retry:`, body.failed);
+                    const first = body.failed[0];
+                    pushFailure = {
+                        status: response.status,
+                        message: `Server could not save ${body.failed.length} order(s), e.g. ${first.id}: ${first.error}`,
+                    };
                 }
             }
+
+            if (pushFailure) {
+                lastPushError = { ...pushFailure, at: new Date().toISOString() };
+                logProblem('push orders', 'error', pushFailure.message);
+            } else {
+                lastPushError = null;
+                logRecovered('push orders');
+            }
+        } else {
+            lastPushError = null;
         }
 
         // Pull items from cloud
@@ -302,7 +348,7 @@ async function runSync() {
                 }
             }
         } catch (netErr) {
-            console.error('Network or SQLite error during product sync:', netErr);
+            logProblem('pull products', 'error', netErr.message);
         }
 
         // Pull settings from cloud
@@ -339,13 +385,14 @@ async function runSync() {
                     result.commit();
                 }
             } catch (e) {
-                console.error('Failed to sync riders', e);
+                logProblem('pull riders', 'error', e.message);
             }
 
             // Sync Customers: only what changed since last time (see syncCustomersDelta);
             // falls back to the full list on backends without /customers/sync
             try {
                 const deltaSupported = await syncCustomersDelta(db, headers);
+                if (deltaSupported) logRecovered('pull customers');
                 // totalOrders / totalSpent change on every synced order but aren't stored here
                 const result = deltaSupported ? null : await fetchChanged('customers', `${API_URL}/customers`, headers, (list) =>
                     Array.isArray(list) ? list.map(c => [c.id, c.name, c.phone, c.address, c.loyaltyPoints, c.branchId]) : list);
@@ -368,7 +415,7 @@ async function runSync() {
                     result.commit();
                 }
             } catch (e) {
-                console.error('Failed to sync customers', e);
+                logProblem('pull customers', 'error', e.message);
             }
 
             // Sync Categories
@@ -389,7 +436,7 @@ async function runSync() {
                     result.commit();
                 }
             } catch (e) {
-                console.error('Failed to sync categories', e);
+                logProblem('pull categories', 'error', e.message);
             }
 
             // Sync Vouchers
@@ -418,12 +465,12 @@ async function runSync() {
                     result.commit();
                 }
             } catch (e) {
-                console.error('Failed to sync vouchers', e);
+                logProblem('pull vouchers', 'error', e.message);
             }
         }
 
     } catch (error) {
-        console.error("Sync worker encountered an error:", error.message);
+        logProblem('sync', 'error', error.message);
     }
     return changed;
 }
@@ -447,4 +494,4 @@ function startSyncWorker(onSyncComplete) {
     setTimeout(tick, SYNC_INTERVAL_MS);
 }
 
-module.exports = { startSyncWorker, performSync };
+module.exports = { startSyncWorker, performSync, getLastPushError };
